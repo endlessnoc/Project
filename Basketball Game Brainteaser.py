@@ -45,8 +45,8 @@ print('Game End！')
 print('Team[A] Number of Shots：%d，Score：%d'%(a_control_times, a_score))
 print('Team[B] Number of Shots：%d，Score：%d'%(b_control_times, b_score))
 if a_score> b_score: 
-    print("A team Win!")
+    print("Team [A] Win!")
 elif a_score == b_score:
     print("Tied!")
 else:
-    print("B team Win!")
+    print("Team [B] Win!")
