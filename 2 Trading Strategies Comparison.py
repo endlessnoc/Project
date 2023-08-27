@@ -5,6 +5,7 @@
 #Strategy B has a win rate of 33.33% and a profit-loss ratio of 4.2.
 #After a sufficient number of trades over the same period (E.g., 10,000 trades), which strategy would yield higher expected returns?
 
+
 import random
 import matplotlib
 import matplotlib.pyplot as plt
@@ -35,6 +36,7 @@ for i in x_list:
         B_t_profit = B_t_profit - 1.0
     B_t_profit_list.append(B_t_profit)
 
+#Printing Result
 print('After %d Times of Trading, Strategt A Return = %.1f，Strategy B Return = %.1f'%(N_trade,A_t_profit,B_t_profit))
 if A_t_profit > B_t_profit:
     print("A strategy win!")
@@ -43,6 +45,7 @@ elif  A_t_profit == B_t_profit:
 else :
     print("B strategy win!")
 
+#Visulization
 plt.figure(figsize=(8,6))
 plt.scatter(x_list, A_t_profit_list, label='Strategy A Profit')
 plt.scatter(x_list, B_t_profit_list, label='Strategy B Proft')
