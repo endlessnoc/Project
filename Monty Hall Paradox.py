@@ -15,6 +15,7 @@ for i in range(10000): # Number of Simulation
     car = random.choice([1,2,3]) # 1 Car in 3 doors 
     player = random.choice([1,2,3]) # Player randomly select 1 door
     #The host randomly selects a door, which is neither the door chosen by the player nor the one with a car behind.
+    door_list=[1,2,3]
     door_list.remove(player)
     if car in door_list:
         door_list.remove(car)
@@ -25,8 +26,8 @@ for i in range(10000): # Number of Simulation
     else:
         c =c+1 #Player's initial choice is wrong (There's not a car behind), so switching is better.
     
-print("Not Switch：",NoC)
-print("Switch：",c)
+print("Not Switch Win：",NoC)
+print("Switch Win：",c)
 
 
 #Surprisingly, the % are not evenly split at 50-50. If you choose to switch doors, you'll win 2/3 of the time!
