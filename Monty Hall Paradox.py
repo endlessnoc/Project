@@ -28,6 +28,7 @@ for i in range(10000): # Number of Simulation
     
 print("Not Switch Win：",NoC)
 print("Switch Win：",c)
+print("Win Rate of Switch:", str(100*(c/(c+NoC))),"%")
 
 
 #Surprisingly, the % are not evenly split at 50-50. If you choose to switch doors, you'll win 2/3 of the time!
