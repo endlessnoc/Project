@@ -1,24 +1,32 @@
+#There are 3 doors, behind which are 2 goats and 1 car. You have to select a door first (let's call it door A).
+#The goal is to find the car behind it. Monty Hall, the host of the game, inspects the other doors (B & C) and opens one with a goat behind it. (If both doors conceal goats behind, he randomly selects one.)
+#Here's the scenario: 
+#1. Stick with your initial choice of door A  
+#2. Switch to the unopened door? 
+# Which choice is better? 
+
+
 import random
 
-NoC=0 #不換門
-c=0 #換門
+c=0 #Switch
+NoC=0 #Not Switch
 
-for i in range(10000): #做1000次實驗
-    car = random.choice([1,2,3]) #汽車隨機出現在三扇門之中
-    player = random.choice([1,2,3]) #挑戰者選擇了一扇門(隨機)
-    #以下數行=主持人隨機選擇一門，這扇門不是挑戰者選擇的門，也不是汽車所在的門
-    door_list = [1,2,3]
+for i in range(10000): # Number of Simulation
+    car = random.choice([1,2,3]) # 1 Car in 3 doors 
+    player = random.choice([1,2,3]) # Player randomly select 1 door
+    #The host randomly selects a door, which is neither the door chosen by the player nor the one with a car behind.
     door_list.remove(player)
     if car in door_list:
         door_list.remove(car)
     host = random.choice(door_list)
     
     if player == car:
-        NoC = NoC+1 #挑戰者原本選的門後有汽車，那不換是對的
+        NoC = NoC+1 #TPlayer's initial choice is right (There's a car behind), so not switching is better.
     else:
-        c =c+1 #挑戰者原本選的門後沒有汽車，那換是對的
+        c =c+1 #Player's initial choice is wrong (There's not a car behind), so switching is better.
     
-print("不換：",NoC)
-print("換：",c)
+print("Not Switch：",NoC)
+print("Switch：",c)
 
 
+#Surprisingly, the % are not evenly split at 50-50. If you choose to switch doors, you'll win 2/3 of the time!
