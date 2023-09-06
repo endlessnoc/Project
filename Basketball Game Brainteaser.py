@@ -19,31 +19,31 @@ b_score = 0
 b_control_times = 0
 goal_list = [True, True, False]
 
-control_ball = random.choice(['A','B'])
+control_ball = random.choice(["A","B"])
 for i in range(100):
-    if control_ball == 'A':
+    if control_ball == "A":
         a_control_times = a_control_times + 1
         a_score = a_score + 2
-        print('%d. Team[A] Score.\n Scoreboard: \n Team A: TeamB =  %d ：%d'%(
+        print("%d. Team[A] Score.\n Scoreboard: \n Team A: TeamB =  %d ：%d"%(
               i+1, a_score, b_score)) 
-        control_ball = 'B'
+        control_ball = "B"
     else:
         b_control_times = b_control_times + 1
         goal = random.choice(goal_list)
         if goal:
             b_score = b_score + 3
-            print('%d. Team[B] Score.\n Scoreboard: \n Team A: TeamB = %d ：%d'%(
+            print("%d. Team[B] Score.\n Scoreboard: \n Team A: TeamB = %d ：%d"%(
                   i+1, a_score, b_score)) 
-            control_ball = 'A'
+            control_ball = "A"
         else:
-            print('%d. Team[B] Miss.\n Scoreboard: \n Team A: TeamB = %d ：%d'%(
+            print("%d. Team[B] Miss.\n Scoreboard: \n Team A: TeamB = %d ：%d"%(
                   i+1, a_score, b_score)) 
             # Rebounds
-            control_ball = random.choice(['A', 'B'])    
+            control_ball = random.choice(["A", "B"])    
 
-print('Game End！')
-print('Team[A] Number of Shots：%d，Score：%d'%(a_control_times, a_score))
-print('Team[B] Number of Shots：%d，Score：%d'%(b_control_times, b_score))
+print("Game End！")
+print("Team[A] Number of Shots：%d，Score：%d"%(a_control_times, a_score))
+print("Team[B] Number of Shots：%d，Score：%d"%(b_control_times, b_score))
 if a_score> b_score: 
     print("Team [A] Win!")
 elif a_score == b_score:
