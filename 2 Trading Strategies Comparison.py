@@ -11,7 +11,7 @@ B_t_profit_list = []
 x_list = list(range(N_trade))
 for i in x_list:
 
-#Strategt A Win Rate = 66.66%
+#Strategt A Win Rate = 66.66%, profit-and-loss ratio = 1.5
     A_profit = random.choice([True, True, False])
     if A_profit:
         A_t_profit = A_t_profit + 1.5
@@ -19,7 +19,7 @@ for i in x_list:
         A_t_profit = A_t_profit - 1.0
     A_t_profit_list.append(A_t_profit)
     
- #Strategt B Win Rate = 33.33%
+ #Strategt B Win Rate = 33.33%, profit-and-loss ratio = 4.2
     B_profit = random.choice([True, False, False])
     if B_profit:
         B_t_profit = B_t_profit + 4.2
