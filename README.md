@@ -1,2 +1,2 @@
 # Project
-Self-learning project.
+Self-study project and programming file.
