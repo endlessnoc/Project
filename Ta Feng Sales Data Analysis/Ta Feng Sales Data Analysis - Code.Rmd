@@ -1,0 +1,2133 @@
+---
+title: "TaFeng_Data_Analysis"
+author: "G11, NSYSU"
+date: "`r Sys.time()`"
+output:
+  html_document:
+    highlight: pygments
+    theme: flatly
+    css: ../etc/style.css
+  pdf_document: default
+---
+<br>
+
+### 資料彙整流程
+
+<center>
+![Fig-1:交易資料彙整](fig/aggregation.jpg)
+</center>
+
+<hr>
+
+### 1. 載入套件與資料 Importing Libraries and Loading Data
+
+```{r echo=T, message=F, cache=F, warning=F}
+#載入套件
+rm(list=ls(all=T))
+pacman::p_load(magrittr, readr, caTools, ggplot2, dplyr, vcd, plotly,tidyr, gridExtra, reshape2, heatmaply,morpheus)
+```
+
+```{r}
+#讀進資料
+df = read_csv("data/ta_feng_all_months_merged.csv") %>% 
+     data.frame %>% 
+     setNames(c("date","cust","age","area","cat","prod","qty","cost","price"))
+head(df)
+```
+
+### 2.資料預處理 Data Preprocessing
+
+```{r}
+#資料結構
+str(df)
+```
+
+```{r}
+#資料唯一值數量 / Checking Unique Values
+col_list = colnames(df)
+unique_counts = list()
+
+for (col in col_list) {
+  unique_count = length(unique(df[[col]]))  
+  unique_counts[[col]] = unique_count
+}
+
+for (col in col_list) {  
+  cat("Column", col, "has", unique_counts[[col]], "unique values.\n")
+}
+
+```
+
+
+```{r}
+#日期格式轉換、年齡層級與郵遞區號整理
+df$date = as.Date(df$date, format="%m/%d/%Y")
+age.group = c("<25","25-29","30-34","35-39","40-44",
+              "45-49","50-54","55-59","60-64",">65")
+df$age = c(paste0("u",seq(24,69,5)),"none")[match(df$age,age.group,11)]
+df$area = paste0("z",df$area)
+head(df)
+```
+Area Code: 105=松山區、106=大安區、110=信義區、114=內湖區、115=南港區、221=汐止市、Others=其他、Unknown=未知<br>
+
+
+```{r}
+#檢視數量、成本、售價分布狀況
+par(mfrow=c(1,3),cex=0.7)
+hist(df$qty, main = "Qty Histogram", xlab = "Quantity", ylab = "Freq", col = "lightblue")
+hist(df$cost, main = "Cost Histogram", xlab = "Cost", ylab = "Freqy", col = "lightgreen")
+hist(df$price, main = "Price Histogram", xlab = "Price", ylab = "Freq", col = "lightcoral")
+#可見三者資料都是極端右偏分布，且無負值
+```
+
+```{r}
+#查看數據極大值
+apply(df[,7:9], 2, max)
+```
+
+```{r}
+#定義離群值
+sapply(df[,7:9], quantile, prob=c(.99, .999, .9995))
+```
+
+```{r}
+#移除離群值 Remove Outliers
+df = subset(df, qty<=24 & cost<=3800 & price<=4000) 
+nrow(df)  
+```
+
+```{r}
+#根據日期和客人彙總訂單 / Agrregate by Date & Customer
+df$tid = group_indices(df, date, cust)
+```
+
+```{r}
+#檢視彙總後的No. cust, cat, prod, tid唯一值 / Unique Values
+sapply(df[c("cust","cat","prod","tid")], n_distinct)
+```
+
+```{r}
+#根據前述分好的tid，彙整出需要的資料
+X = df %>% group_by(tid) %>% 
+  summarise(
+    date = min(date),          # 交易日期  
+    cust = min(cust),          # 顧客 ID
+    age = min(age),            # 顧客 年齡級別
+    area = min(area),          # 顧客 居住區別
+    items = n(),               # 交易項目(總)數
+    pieces = sum(qty),         # 產品(總)件數
+    total = sum(price),        # 交易(總)金額
+    gross = sum(price - cost)  # 毛利
+) %>% data.frame
+nrow(X)  
+```
+
+
+```{r}
+#彙整後資料概覽
+summary(X)
+#毛利有負，代表並非都是賺錢
+```
+
+
+```{r}
+# 定義離群值
+sapply(X[,6:9], quantile, prob=c(.999, .9995, .9999))
+```
+
+```{r}
+# 移除離群值 / Remove Outliers
+X = subset(X, items<=62 & pieces<95 & total<16000) 
+nrow(X)
+```
+
+
+```{r}
+#將X按照Cust進行分組，然後對每個客戶的數據進行摘要統計。=
+#r（最近購買的天數）
+#s（購買歷史最早的天數）
+#f（購買次數）
+#m（平均每次購買金額）
+#rev（總收入貢獻）
+#raw（總毛利貢獻）
+#age（年齡組別）
+#area（地區代號）
+d0 = max(X$date) + 1
+A = X %>% mutate(
+  days = as.integer(difftime(d0, date, units="days"))) %>% 
+    group_by(cust) %>% 
+      summarize(
+        r = min(days),      # recency
+        s = max(days),      # seniority
+        f = n(),            # frquency
+        m = round(mean(total)),    # monetary
+        rev = sum(total),   # total revenue contribution
+        raw = sum(gross),   # total gross profit contribution
+        age = min(age),     # age group
+        area = min(area),   # area code
+  ) %>% 
+    data.frame      
+nrow(A) # 共有32241個客戶的紀錄
+```
+
+到目前，df為引入的原始資料，X則為根據日期、客人整理過的資料，A則為從X中再計算得出的數據指標資料<br>
+
+
+### 3.探索性資料分析與視覺化 Exploratory Data Analysis
+
+#### 資料分布 Data Distribution
+
+```{r fig.height=8}
+#對A中每欄資料做資料分布視覺化
+par(mfrow=c(4,2), mar=c(3,3,4,2))
+col_list1 = c("r","s","f","m","rev","raw")
+col_list2 = c("age","area")
+for (col in col_list1) {
+  hist(A[,col],freq=T,main=paste("Distribution by", col),xlab=paste(col),ylab="",cex.main=2)
+}
+for (col in col_list2) {
+  table(A[col],useNA="ifany") %>% 
+    barplot(main=paste("Distribution by", col), las=2, xlab = paste(col))
+}
+
+```
+
+可以看出購買頻率、最近購買的天數、平均每次購買金額、總收入貢獻、總毛利都呈現右偏分布<br>
+而購買歷史最早的天數則為左偏分布<br>
+年齡的分佈則以30-39為多數，兩側逐漸遞減；地區則是z115和z221明顯較多<br>
+
+
+#### 年齡和地區分群分析 Age/Area Segmentation
+
+```{r} 
+#依據年齡和地區，對其他欄做比較
+#資料結構處理
+linear_data <- A[, c('r', 'f', 'm', 'rev', 'raw')]
+A$age_1 = as.character(A$age)
+A$area_1 = as.character(A$area)
+
+age = as.numeric(sub("u", "", A$age_1))
+area = as.numeric(sub("z","", A$area_1))
+
+combined_data = cbind(linear_data, age,area)
+unique(combined_data$age)
+unique(combined_data$area)
+combined_data$age = as.factor(combined_data$age)
+combined_data$area = as.factor(combined_data$area)
+
+dim(combined_data)
+
+```
+
+```{r}
+#依據年齡整合所需資料
+grouped_data_age = aggregate(. ~ age, data = combined_data, FUN = mean) 
+grouped_data_age = grouped_data_age[,-7]
+print(grouped_data_age)
+```
+
+```{r}
+#依據地區整合所需資料
+grouped_data_area = aggregate(. ~ area, data = combined_data, FUN = mean) 
+grouped_data_area = grouped_data_area[,-7]
+print(grouped_data_area)
+```
+
+
+```{r fig.height=10, fig.width=10}
+#將整理好的資料by age 做視覺化
+melted_data_age = melt(grouped_data_age, id.vars = "age")
+
+v = ggplot(melted_data_age, aes(x = age, y = value, fill = variable)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.5) +
+  labs(title = "不同年齡級距的參數分布", y = "平均值", x="年齡") +
+  theme_minimal() +
+  facet_wrap(~variable, scales = "free_y", ncol = 1)
+ggplotly(v)
+```
+可以看出30-49歲為淨利與獲利貢獻最明顯的區間<br>
+而平均消費金額最多同樣為30-49歲，但整體峰度較raw和rev低，值得注意的是儘管m隨著年齡漸高而下降，但年齡未知族群卻很高<br>
+總到訪次數一樣以30-49歲較多，但平均到訪次數則以未知族群遠高於其他年齡區間<br>
+
+
+```{r fig.height=10, fig.width=10}
+#將整理好的資料by area 做視覺化
+melted_data_area = melt(grouped_data_area, id.vars = "area")
+j = ggplot(melted_data_area, aes(x = area, y = value, fill = variable)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.5) +
+  labs(title = "不同地區的參數分布", y = "平均值",x= "地區") +
+  theme_minimal() +
+  facet_wrap(~variable, scales = "free_y", ncol = 1)
+ggplotly(j)
+```
+
+
+可以看出南港和汐止為淨利與獲利貢獻最明顯的地區，遠高於其他區<br>
+但平均消費金額而言的話兩者排名居末，顯示此區可能是靠著高客戶基數或者高購買頻率撐起金流<br>
+平均到訪次數則以未知地區最多，南港次之，汐止第三，其餘無明顯差別<br>
+
+
+
+```{r fig.height=5, fig.width=6}
+#馬賽克圖，以下為分析年齡與地區之間的關係
+MOSA = function(formula, data) #定義一個叫MOSA的函數，他接受兩個參數
+mosaic(formula, data, shade=T,   
+  margins=c(0,1,0,0),  #調整圖片邊距
+  labeling_args = list(rot_labels=c(90,0,0,0)), #指定label的顯示模式，90=垂直顯示
+  gp_labels=gpar(fontsize=9), #label字體大小
+  legend_args=list(fontsize=9), #legend字體大小
+  gp_text=gpar(fontsize=7), #裡面文本的字體大小(下圖方框中顯示的數字)
+  labeling=labeling_residuals) #使用殘差labeling
+
+MOSA(~age+area, A)
+```
+
+南港區的消費者多為45歲以上的族群，且 u69 最顯著，代表南港區的高齡族群普遍會前往購買，但30-39歲的族群則否 <br> 汐止內湖的消費者多為30-39歲族群，但u49以上(45歲以上)比較不會前往購買<br>
+
+
+
+#### 年齡區隔特徵 Age Segmentation
+```{r}
+#以年齡分群，針對平均購買次數、平均客單價作分析，並且以年齡族群人數作為泡泡大小
+A %>% 
+  group_by(age) %>%
+    summarize(
+      Group.Size = n(),              # 族群人數
+      avg.Freq = mean(f),            # 平均購買次數
+      avg.Revenue = sum(f*m)/sum(f)  # 平均客單價
+  ) %>% 
+    ggplot(aes(y=avg.Freq, x=avg.Revenue)) +
+    geom_point(aes(col=age, size=Group.Size), alpha=0.5) +
+    geom_text(aes(label=age)) +
+    scale_size(range=c(5,25)) +
+    theme_bw() + theme(legend.position="none") +
+    ggtitle("年齡區隔特徵 (泡泡大小:族群人數)") + 
+    ylab("平均購買次數") + xlab("平均客單價") +
+    geom_vline(xintercept = sum(A$f*A$m)/sum(A$f), col="purple", linetype = "dashed")+
+    geom_hline(yintercept = mean(A$f), col="darkcyan", linetype="dashed")   
+  
+```
+
+30-44歲的人平均客單價明顯較高<br>
+大於65歲的族群平均客單價最低，但平均購買次數較高<br>
+
+
+```{r}
+mean(A$age == "none")
+```
+
+由於`None`(沒有年齡資料的顧客)人數不多，而且特徵很獨特，探索時我們可以考慮濾掉這群顧客<br>
+```{r}
+#濾掉沒有年齡資料的顧客，以年齡分群，針對平均購買次數、平均客單價作分析，並且以年齡族群人數作為泡泡大小
+A %>% 
+  filter(age!="none") %>%    # 濾掉沒有年齡資料的顧客('a99')
+  group_by(age) %>% 
+    summarize(
+      Group.Size = n(),              # 族群人數
+      avg.Freq = mean(f),            # 平均購買次數
+      avg.Revenue = sum(f*m)/sum(f)  # 平均客單價
+  ) %>% 
+      ggplot(aes(y=avg.Freq, x=avg.Revenue)) +
+      geom_point(aes(col=age, size=Group.Size), alpha=0.5)+#geom_point=添加散點圖，根據age設置顏色、根據Group.Size設定大小
+      geom_text(aes(label=age)) +
+      scale_size(range=c(5,25)) +#設置點的大小Range from 5 to 25
+      theme_bw() + theme(legend.position="none") +#設置主題為全白，並且不顯示圖例
+      ggtitle("年齡區隔特徵 (泡泡大小:族群人數)") + 
+      ylab("平均購買次數") + xlab("平均客單價")  +  
+      geom_vline(xintercept = sum(A$f*A$m)/sum(A$f), col="purple", linetype = "dashed")+
+      geom_hline(yintercept = mean(A$f), col="darkcyan", linetype="dashed")   
+```
+
+```{r} 
+#濾掉沒有年齡資料的顧客，以年齡分群，針對平均購買單價、平均購買總金額作分析，並且以年齡族群人數作為泡泡大小
+A%>%
+  filter(age!="none")  %>%  #濾掉沒有年齡資料和地區未知的顧客
+  group_by(age) %>% 
+  summarize(
+  Group.Size = n(),              # 族群大小
+  avg.total = mean(rev),          # 平均購買總金額
+  avg.price = sum(f*m)/sum(m)  # 平均客單價
+  ) %>% 
+  ggplot(aes(y=avg.price, x=avg.total)) +
+  geom_point(aes(col=age, size=Group.Size), alpha=0.5) +
+  geom_text(aes(label=age)) +
+  scale_size(range=c(5,25)) +
+  theme_bw() + theme(legend.position="none") +
+  ggtitle("年齡區隔特徵 (泡泡大小:族群人數)") + 
+  geom_vline(xintercept = mean(A$rev),col="purple",linetype = "dashed")+
+  geom_hline(yintercept = sum(A$f*A$m)/sum(A$m), col="darkcyan", linetype="dashed")+
+  ylab("平均單價") + xlab("平均購買總金額")
+```
+
+
+
+#### 地理區隔特徵 Area Segmentation
+```{r}
+#濾掉沒有年齡資料和未知地區的顧客，以地區分群，針對平均購買次數、平均客單價作分析，並且以地區族群人數作為泡泡大小
+A %>% 
+  filter(age!="none"& area!="zUnknown") %>%    # 濾掉沒有年齡資料的顧客
+  group_by(area) %>% 
+    summarize(
+      Group.Size = n(),              # 族群人數
+      avg.Freq = mean(f),            # 平均購買次數
+      avg.Revenue = sum(f*m)/sum(f)  # 平均客單價
+  ) %>% 
+    ggplot(aes(y=avg.Freq, x=avg.Revenue)) + 
+    geom_point(aes(col=area, size=Group.Size), alpha=0.5) + #geom_point=添加散點圖，根據area設置顏色、根據Group.Size設定大小
+    geom_text(aes(label=area)) + 
+    scale_size(range=c(5,25)) + #設置點的大小Range from 5 to 25
+    theme_bw() + theme(legend.position="none") + #設置主題為全白，並且不顯示圖例
+    ggtitle("地理區隔特徵 (泡泡大小:族群人數)") + 
+    ylab("平均購買次數") + xlab("平均客單價")+  
+    geom_vline(xintercept = sum(A$f*A$m)/sum(A$f), col="purple", linetype = "dashed")+
+    geom_hline(yintercept = mean(A$f), col="darkcyan", linetype= "dashed")  
+```
+
+南港區的人平均購買次數高，但是平均客單價最低。大安區反之<br>
+
+
+```{r}
+#濾掉沒有年齡資料和未知地區的顧客，以地區分群，針對最近一次購買日數、平均客單價作分析，並且以地區族群人數作為泡泡大小
+A %>% filter(age!="None"& area!="zUnknown") %>%    # 濾掉沒有年齡資料和地區未知的顧客
+  group_by(area) %>% summarize(
+  Group.Size = n(),              # 族群人數
+  avg.lastday = mean(r),           # 平均最近一次購買日
+  avg.Revenue = sum(f*m)/sum(f)  # 平均客單價
+  ) %>% 
+  ggplot(aes(y=avg.lastday, x=avg.Revenue)) +
+  geom_point(aes(col=area, size=Group.Size), alpha=0.5) +
+  geom_text(aes(label=area)) +
+  scale_size(range=c(5,25)) +
+  theme_bw() + theme(legend.position="none") +
+  ggtitle("地理區隔特徵 (泡泡大小:族群人數)") + 
+  geom_vline(xintercept = sum(A$f*A$m)/sum(A$f),col="purple",linetype = "dashed")+
+  geom_hline(yintercept = mean(A$r), col="darkcyan", linetype="dashed")+
+  ylab("平均最近一次購買日") + xlab("平均客單價")
+
+```
+
+```{r}
+#濾掉沒有年齡資料和未知地區的顧客，以地區分群，針對平均購買次數率、平均總金額作分析，並且以地區族群人數作為泡泡大小
+
+A %>% filter(age!="None"&area!="zUnknown") %>%    # 濾掉沒有年齡資料和地區未知的顧客
+  group_by(area) %>% summarize(
+  Group.Size = n(),              # 族群人數
+  avg.freq = mean(f),           # 平均購買頻率
+  avg.total = mean(rev)  # 平均總金額
+  ) %>% 
+  ggplot(aes(y=avg.freq, x=avg.total)) +
+  geom_point(aes(col=area, size=Group.Size), alpha=0.5) +
+  geom_text(aes(label=area)) +
+  scale_size(range=c(5,25)) +
+  theme_bw() + theme(legend.position="none") +
+  ggtitle("地理區隔特徵 (泡泡大小:族群人數)") + 
+  geom_vline(xintercept = mean(A$rev),col="purple",linetype = "dashed")+
+  geom_hline(yintercept = mean(A$f), col="darkcyan", linetype="dashed")+
+  ylab("平均購買次數") + xlab("平均總金額")
+
+```
+
+
+```{r}
+#濾掉沒有年齡資料和未知地區的顧客，以地區分群，針對平均購買次數、平均客單價作分析，並且以地區族群人數作為泡泡大小
+A %>% filter(age!="None"&area!="zUnknown") %>%    # 濾掉沒有年齡資料和地區未知的顧客
+  group_by(area) %>% summarize(
+  Group.Size = n(),              # 族群人數
+  avg.Freq = mean(f),            # 平均購買次數
+  avg.Revenue = sum(f*m)/sum(f)  # 平均客單價
+  ) %>% 
+  ggplot(aes(y=avg.Freq, x=avg.Revenue)) +
+  geom_point(aes(col=area, size=Group.Size), alpha=0.5) +
+  geom_text(aes(label=area)) +
+  scale_size(range=c(5,25)) +
+  theme_bw() + theme(legend.position="none") +
+  ggtitle("地理區隔特徵 (泡泡大小:族群人數)") + 
+  geom_vline(xintercept = sum(A$f*A$m)/sum(A$f),col="purple",linetype = "dashed")+
+  geom_hline(yintercept = mean(A$f), col="darkcyan", linetype="dashed")+
+  ylab("平均購買次數") + xlab("平均客單價")
+
+```
+
+
+#### 週內交易量分析 Transactions in Week Days
+
+```{r fig.height=2, fig.width=6}
+#週一到周日交易量分布 
+X$wday = format(X$date, "%u")
+par(cex=0.7, mar=c(2,3,2,1))
+table(X$wday) %>% 
+    barplot(main="No. Transactions in Week Days")
+```
+
+```{r fig.height=5, fig.width=6}
+#以年齡分群，將週一到周日交易量分布視覺化輸出
+X %>% 
+  mutate(wd=factor(format(date, "%w"))) %>% 
+    count(age, wd) %>% 
+    ggplot(aes(x=wd, y=n,fill=age)) +
+    geom_bar(stat="Identity") +
+    labs(title="Each Age Group F By Weekday", y="Total")+
+    facet_wrap(~age) #根據age將圖表分成多個子圖
+#下圖橫軸順序皆為日一二三...六
+```
+ 
+除了年紀較大和最小的族群以外，其他傾向於假日(可能因為要上班)<br>
+
+```{r fig.height=5, fig.width=6}
+#以地區分群，將週一到周日交易量分布視覺化輸出
+X %>% 
+  mutate(wd=factor(format(date, "%w"))) %>% 
+    count(area, wd) %>% 
+    ggplot(aes(x=wd, y=n,fill=area)) +
+    geom_bar(stat="Identity") +
+    labs(title="Each Area Group F By Weekday", y="Total")+
+    facet_wrap(~area) #根據area將圖表分成多個子圖
+#下圖橫軸順序皆為日一二三...六
+```
+
+南港汐止數量明顯高太多了，基本上可以確定這家店就在南港靠近汐止的地方。<br>
+至於週內分布整體而言也以六日居多<br>
+
+
+#### 商品種類分群分析 Product Analysis
+
+```{r}
+#根據商品種類分群並計算Total qunatity, total revenue, total profit, etc.
+dfbycat = df %>% group_by(cat) %>% summarize(
+  noProd = n_distinct(prod),
+  Tqty = sum(qty),
+  Trev = sum(price),
+  Traw = sum(price) - sum(cost),
+  GPM = Traw/Trev,  #Gross Profit Margin
+  Weightedprice = round(Trev/Tqty,2)
+  )
+str(dfbycat)
+head(dfbycat)
+```
+
+
+```{r}
+#百大商品營收與毛利之貢獻視覺化
+Trev100 = arrange(dfbycat, desc(Trev)) %>%  #根據Trev排序
+  mutate(Trev_ind=Trev/sum(Trev) *100, Trev_cum=cumsum(Trev_ind)) %>%  #
+  head(100) %>% 
+    ggplot(aes(x=1:100)) +
+    geom_col(aes(y=Trev_cum),fill="magenta",alpha=0.5) +
+    geom_col(aes(y=Trev_ind), fill="cyan",alpha=0.5) +
+    labs(title="百大商品貢獻營收", x="第n大商品", y="貢獻營收累計百分比") +
+    theme_bw()
+
+Traw100 = arrange(dfbycat, desc(Traw)) %>%  #根據Traw排序
+  mutate(Traw_ind=Traw/sum(Traw) *100, Traw_cum=cumsum(Traw_ind)) %>%  #
+  head(100) %>% 
+    ggplot(aes(x=1:100)) +
+    geom_col(aes(y=Traw_cum),fill="violet",alpha=0.5) +
+    geom_col(aes(y=Traw_ind), fill="blue",alpha=0.5) +
+    labs(title="百大商品毛利營收", x="第n大商品", y="貢獻毛利累計百分比") +
+    theme_bw()
+
+subplot(Trev100, Traw100, nrows = 1) %>% layout(title = "百大商品營收與毛利累積百分比")
+
+```
+
+
+可以看見2007個商品中，前百大商品佔了將近一半的營收貢獻<br>
+前10大商品就佔了約19%的營收與12%的毛利<br>
+前20大商品佔了約27%的營收與19%的毛利<br>
+前50大商品佔了約42%的營收與31%的毛利<br>
+-->顯現主力商品以薄利多銷為主<br>
+
+
+```{r}
+#前20大熱門的商品
+top20 = tapply(df$qty,df$cat,sum) %>% sort %>% tail(20) %>% names
+top20
+```
+
+```{r fig.height=6, fig.width=8}
+#前20大品項與年齡的關係
+MOSA(~cat+age, df[df$cat %in% top20,])
+```
+```{r fig.height=6, fig.width=8}
+#前20大品項與地區的關係
+MOSA(~cat+area, df[df$cat %in% top20,])
+```
+
+```{r fig.height=5, fig.width=6}
+# ggplot(df, aes(x = df[df$cat %in% top20,], y = area, color = age)) +
+#   geom_point(size = 3) +
+#   labs(title = "訂單分布三點圖", x = "商品類型 (cat)", y = "客戶地址代碼 (area)") +
+#   theme_minimal()
+```
+
+
+
+### 4. RFM矩陣 規則分群 RFM Model
+RFM模型：
+r（recency）最近一次消費：若顧客上次消費紀錄的時間愈近則價值愈大。
+f（frequency）消費頻率：顧客在所選期間中有幾次消費紀錄？頻率愈高則價值愈大。
+m（monetary消費金額）：顧客的總消費額，即為公司貢獻了多少利潤？金額愈高則價值愈大。
+
+```{r}
+#定義函數
+hmap1 = function(x, ...) { heatmaply(
+  as.data.frame.matrix(x), cexRow=0.7, cexCol=0.7, 
+  grid_color='gray70', ...)
+  }  
+```
+
+
+```{r}
+#在顧客資料框加入規則分群欄位
+bm = c(0, quantile(A$m,c(.25,0.5,.75)), max(A$m)+100)
+bf = c(0, quantile(A$f,c(.25,0.5,.75)), max(A$f)+100)
+A = A %>% mutate(
+  mx = cut(A$m, bm, labels=paste0('M',1:4)),
+  fx = cut(A$f, bf, labels=paste0('F',1:4)),
+  MF = paste0(mx, fx)
+  )
+table(A$mx, A$fx)
+```
+
+
+```{r}
+#找出營收最大的品類
+cat100 = count(df, cat, wt=price, sort=T) %>% mutate(
+  pc=n/sum(n), cum.pc=cumsum(pc)) %>% head(100)
+cat100[c(1:5,96:100), ]
+```
+
+
+
+```{r}
+#做出顧客族群x品類 購買金額矩陣 
+df = inner_join(df, A[,c('cust','MF')])
+mx0 = xtabs(price~MF+cat, filter(df, cat %in% cat100$cat[1:30]))
+dim(mx0)
+```
+
+
+```{r}
+#依購買金額矩陣製作熱圖
+hmap1(mx0, col=cool_warm)
+```
+
+#### 正規化 -購買比例矩陣 
+```{r}
+mx1 = mx0/rowSums(mx0)
+hmap1(mx1, col=cool_warm)
+```
+
+
+```{r}
+#熱圖的分群功能
+mx2 = xtabs(price~MF+cat, filter(df, cat %in% cat100$cat[1:20]))
+mx3 = 100*mx2/rowSums(mx2)
+hmap1(mx3, col=cool_warm, show_dendrogram=c(T,F),k_row=5)
+```
+
+
+```{r}
+#依據顧客族群與商品品類的購買金額矩陣
+df0 = inner_join(df, A[,c('cust','MF')])
+mx0 = xtabs(price~MF+cat, filter(df, cat %in% cat100$cat[1:30]))
+dim(mx0)
+print(mx0)
+
+hmap1 = function(x, ...) { heatmaply(
+  as.data.frame.matrix(x), cexRow=0.7, cexCol=0.7, 
+  grid_color='gray70', ...)
+  } 
+hmap1(mx0, col=cool_warm)
+
+##顏色越深，表示價格在對應的產品與級距中占比较高，顏色越淺，表示價格低占比较高(?)
+```
+
+```{r}
+#依據顧客族群與商品品類的購買金額矩陣
+df = inner_join(df, A[,c('cust','MF')])
+A$age_1 = as.character(A$age)
+# 刪除age的'u'
+A$age_1 = as.numeric(sub("u", "", A$age_1))
+df = inner_join(df, A[, c('cust', 'MF', 'age_1')])
+
+mx1 = xtabs(age_1~MF+cat, filter(df, cat %in% cat100$cat[1:30]))
+dim(mx1)
+print(mx1)
+
+hmap1(mx1, col=cool_warm)
+
+#顏色越深，表示年齡大的客戶在對應的產品與級距中占比較高，顏色越淺，表示年齡小的客戶占比較高(?)
+```
+
+
+
+### 5. R(S)FM與集群分析： RSFM Model with Clustering Analysis 
+#### Ref:https://rpubs.com/skydome20/R-Note9-Clustering
+
+在傳統的RFM模型加上新的變數，再將數據進行標準化後，利用K-Means針對
+r(最近一次消費時間)、s(第一次購買日期)、f(消費頻率)、m(消費金額)四項特徵做階層式集群分析，將數萬名消費者依據四維特性分群。
+
+```{r}
+rsfm = scale(A[,2:5]) %>% data.frame #Standardizing rsfm
+head(rsfm)
+```
+
+```{r}
+#Hierarchical method
+rsfmcluster = hclust(dist(rsfm), method='ward.D')# Euclidean method to get distance matrix, Ward Method (ANOVA) to get cluster
+plot(rsfmcluster)
+```
+
+
+
+```{r}
+#Make 5 cluster(製作分群向量)
+set.seed(11)
+rsfm5 = cutree(rsfmcluster, k=5)  
+```
+
+```{r}
+#r,s,f,m 的平均
+rsfmtable = split(rsfm,rsfm5) %>% sapply(colMeans) %>% round(4)  %>% data.frame()
+rsfmtable
+```
+
+
+#### 各客群的r,s,f,m視覺化
+
+```{r fig.height=6, fig.width=10}
+# par(cex=0.8)
+#  split(rfm,rfm5) %>%
+#    sapply(colMeans) %>% barplot(beside=T,col = c("cyan", "darkcyan", "violet","darkmagenta"))
+#    legend('topright',legend=colnames(rfm),fill =c("cyan", "darkcyan", "violet","darkmagenta"))
+color_list = c("cyan", "darkcyan", "violet", "darkmagenta")
+par(mfrow = c(1, 5)) 
+rsfm_means <- split(rsfm, rsfm5) %>% sapply(colMeans)
+
+for (i in 1:5) {
+  barplot(rsfm_means[, i], beside = TRUE, col = color_list,
+          main = paste("Group", i), names.arg = colnames(rsfm),
+          ylim = c(-1.5, 2))  
+}
+
+```
+
+我們可以將顧客分出五群：
+
+Group1：一般顧客 (normal)
+r低、s高、f居中、m居中 -->最近購買的天數低於平均，可能表示他們是比較忠誠的顧客。同時，他們的購買歷史最早的天數高於平均，這可能意味著他們已經是長期的忠誠客戶。他們的購買次數和平均購買金額約為平均水平，可能是穩定且有中等消費水平的顧客。 <br>
+
+Group2：新進顧客 (new)
+r低、s非常低、f低、m略低 -->最近購買的天數低於平均，可能也是相對忠誠的顧客。然而，他們的購買歷史最早的天數非常低於平均，這意味著他們可能是相對新的顧客。他們的購買次數低於平均，平均購買金額略低於平均，可能是平均貢獻銷售額相對較小的忠誠顧客。<br>
+
+Group3：沉默顧客 (silence)
+r非常高、s略高、f低、m略低 -->最近購買的天數遠高於平均，可能是不太活躍的顧客。然而，他們的購買歷史最早的天數略高於平均，這可能表示他們在較早的時間點曾經是活躍的顧客。他們的購買次數低於平均，平均購買金額也略低於平均，可能是不太活躍且有中等消費水平的顧客。<br>
+
+Group4：高購買力顧客 (highp) --> #重要發展客戶
+r略高、s低、f低、m非常高 -->顧客最近購買的天數略高於平均，但他們的購買歷史最早的天數低於平均，這可能表示他們在較早的時間點曾經是活躍的顧客，但現在變得不太活躍。他們的購買次數低於平均，但平均購買金額非常高於平均，這可能是高價值但不太活躍的顧客。<br>
+
+Group5：長期忠誠顧客 (longterm) -->#一般保持客戶
+r低、、s高、f非常高、m低 -->顧客最近購買的天數低於平均，可能是比較忠誠的顧客。他們的購買歷史最早的天數高於平均，這可能意味著他們已經是長期的忠誠客戶。然而，他們的購買次數遠遠高於平均，但平均購買金額低於平均，這可能是頻繁購買但購買金額不高的顧客。<br>
+
+
+```{r}
+#Non-hierarchical method: K-means
+set.seed(11) #確保結果可復現
+A$rsfm_group = kmeans(rsfm, centers= 5)$cluster #幫每個客人貼r,s,f,m的標籤!
+head(A)
+```
+
+```{r}
+# # of clients in 各客群
+table(A$rsfm_group)
+```
+
+
+```{r}
+#將資料分進各自客群
+normal = split(A,A$rsfm_group)[[1]]
+new = split(A,A$rsfm_group)[[2]]
+silence = split(A,A$rsfm_group)[[3]]
+highp = split(A,A$rsfm_group)[[4]]
+longterm = split(A,A$rsfm_group)[[5]]
+```
+
+
+
+### 6.製作預測變數  Preparing The Predictors (X)  
+#### Importing Data
+```{r echo=T, message=F, cache=F, warning=F}
+load("data/tf0.rdata")
+```
+
+#### Preprocessing
+Remove the data in the last period (After Feb 01).
+```{r}
+feb01 = as.Date("2001-02-01")   # 資料分割日期 
+Zs = subset(Z0, date < feb01)    # 618212 項目
+```
+
+#### Aggregate for the Transaction Records
+重新匯整交易紀錄，如前述的內容
+```{r}
+Xs = group_by(Zs, tid) %>% summarise(
+  date = first(date),  # date of transaction
+  cust = first(cust),  # customer id
+  age = first(age),    # age group
+  area = first(area),  # area group
+  items = n(),                # number of items
+  pieces = sum(qty),          # number of pieces
+  total = sum(price),         # total amount
+  gross = sum(price - cost)   # raw profit
+  ) %>% data.frame  # 88387 交易筆數
+```
+
+```{r}
+summary(Xs)
+```
+
+#### Check Quantile and Remove Outlier 
+移除離群值
+```{r}
+sapply(Xs[,6:9], quantile, prob=c(.999, .9995, .9999))
+```
+```{r}
+Xs = subset(Xs, items<=64 & pieces<=98 & total<=11260) # 88387 -> 88295
+```
+
+#### Aggregate for Customer Records
+重新匯整顧客資料
+```{r}
+d0 = max(Xs$date) + 1
+As = Xs %>% mutate(
+  days = as.integer(difftime(d0, date, units="days"))
+  ) %>% 
+  group_by(cust) %>% summarise(
+    r = min(days),      # recency
+    s = max(days),      # seniority
+    f = n(),            # frequency
+    m = mean(total),    # monetary
+    rev = sum(total),   # total revenue contribution
+    raw = sum(gross),   # total gross profit contribution
+    age = age[1],       # age group
+    area = area[1],     # area code
+  ) %>% data.frame      # 28584 顧客
+nrow(As)
+```
+<br><br><hr>
+
+
+### 7. 製作預測變數 Preparing the Target Variables (Y) 
+
+##### Aggregate Feb's Transaction by Customer
+彙整最後一期(二月後)資料
+```{r}
+feb = filter(X, date>= feb01) %>% group_by(cust) %>% 
+  summarise(amount = sum(total)) 
+summary(feb)
+```
+`feb$amount`之中有最後一期來買過的`16,900`位顧客的營收貢獻
+
+##### The Target for Regression - `A$amount`
+將`feb$amount`匯入`A`
+```{r}
+As = merge(As, feb, by="cust", all.x=T) #A和feb兩個dataframe會根據cust合併 (這是Left Join)
+```
+
+##### The Target for Classification - `A$buy`
+`A$amount`是`NA`代表這位顧客最後一期沒來買 <br>
+`A$amount`不是`NA`代表這位顧客最後一期有來買過
+```{r}
+As$buy = !is.na(As$amount)  
+table(As$buy, !is.na(As$amount))
+```
+
+##### Summary of the Dataset
+```{r}
+summary(As)
+```
+
+```{r}
+normal_df = As[As$cust %in% normal$cust,]
+new_df = As[As$cust %in% new$cust,]
+silence_df = As[As$cust %in% silence$cust,]
+highp_df = As[As$cust %in% highp$cust,]
+longterm_df = As[As$cust %in% longterm$cust,]
+```
+
+
+讓`X`與`Z`之中的資料範圍與`A`一樣
+```{r}
+Xs = subset(Xs, cust %in% As$cust & date < as.Date("2001-02-01"))
+Zs = subset(Zs, cust %in% As$cust & date < as.Date("2001-02-01"))
+```
+
+
+### 8. 購買機率模型 Buying Probabilities Model
+
+#### Normal
+```{r}
+set.seed(11)
+normal_spl = sample.split(normal_df$buy, SplitRatio=0.7)
+c(nrow(normal_df), sum(normal_spl), sum(!normal_spl))
+```
+
+```{r}
+cbind(normal_df, normal_spl) %>% filter(buy) %>% 
+  ggplot(aes(x=log(amount))) + geom_density(aes(fill=normal_spl), alpha=0.5)
+```
+```{r}
+normal_A0 = subset(normal_df, buy) %>% mutate_at(c("m","rev","amount"), log10)
+n = nrow(normal_A0)
+set.seed(11)
+normal_spl0 = 1:n %in% sample(1:n, round(0.7*n))
+c(nrow(normal_A0), sum(normal_spl0), sum(!normal_spl0))
+```
+
+
+```{r}
+normal_train = subset(normal_df, normal_spl)
+normal_test = subset(normal_df, !normal_spl)
+```
+
+```{r}
+glm_normal = glm(buy ~ . ,normal_train[,-c(1,10)],family = binomial() )
+summary(glm_normal)
+```
+
+```{r}
+normal_pred = predict(glm_normal, normal_test, type = "response")
+normal_confmt = table(actual = normal_test$buy, predict = normal_pred > 0.5)
+normal_confmt
+```
+
+```{r}
+normal_acc.ts = normal_confmt %>% {sum(diag(.))/sum(.)}
+c(1-mean(normal_test$buy) , normal_acc.ts) 
+```
+
+```{r}
+# colAUC(normal_pred, normal_test$buy)
+```
+
+
+#### New
+```{r}
+set.seed(11)
+new_spl = sample.split(new_df$buy, SplitRatio=0.7)
+c(nrow(new_df), sum(new_spl), sum(!new_spl))
+```
+
+```{r}
+cbind(new_df, new_spl) %>% filter(buy) %>% 
+  ggplot(aes(x=log(amount))) + geom_density(aes(fill=new_spl), alpha=0.5)
+```
+
+```{r}
+new_A0 = subset(new_df, buy) %>% mutate_at(c("m","rev","amount"), log10)
+n = nrow(new_A0)
+set.seed(11)
+new_spl0 = 1:n %in% sample(1:n, round(0.7*n))
+c(nrow(new_A0), sum(new_spl0), sum(!new_spl0))
+```
+
+```{r}
+new_train = subset(new_df, new_spl)
+new_test = subset(new_df, !new_spl)
+```
+
+```{r}
+glm_new = glm(buy ~ . ,new_train[,-c(1,10)],family = binomial() )
+summary(glm_new)
+```
+
+```{r}
+new_pred = predict(glm_new, new_test, type = "response")
+new_confmt = table(actual = new_test$buy, predict =new_pred > 0.5)
+new_confmt
+```
+
+```{r}
+new_acc.ts = new_confmt %>% {sum(diag(.))/sum(.)}
+c(1-mean(new_test$buy) , new_acc.ts) #accuracy approximately 0.73
+```
+
+```{r}
+colAUC(new_pred, new_test$buy) 
+```
+
+
+#### Silence
+```{r}
+set.seed(11)
+silence_spl = sample.split(silence_df$buy, SplitRatio=0.7)
+c(nrow(silence_df), sum(silence_spl), sum(!silence_spl))
+```
+
+```{r}
+cbind(silence_df, silence_spl) %>% filter(buy) %>% 
+  ggplot(aes(x=log(amount))) + geom_density(aes(fill=silence_spl), alpha=0.5)
+```
+```{r}
+silence_A0 = subset(silence_df, buy) %>% mutate_at(c("m","rev","amount"), log10)
+n = nrow(silence_A0)
+set.seed(11)
+silence_spl0 = 1:n %in% sample(1:n, round(0.7*n))
+c(nrow(silence_A0), sum(silence_spl0), sum(!silence_spl0))
+```
+
+
+```{r}
+silence_train = subset(silence_df, silence_spl)
+silence_test = subset(silence_df, !silence_spl)
+```
+
+```{r}
+glm_silence = glm(buy ~ . ,silence_train[,-c(1,10)],family = binomial() )
+summary(glm_silence)
+```
+
+```{r}
+silence_pred = predict(glm_silence, silence_test, type = "response")
+silence_confmt = table(actual = silence_test$buy, predict = silence_pred > 0.5)
+silence_confmt
+```
+
+```{r}
+silence_acc.ts = silence_confmt %>% {sum(diag(.))/sum(.)}
+c(1-mean(silence_test$buy) , silence_acc.ts) 
+```
+
+```{r}
+colAUC(silence_pred, silence_test$buy) 
+```
+
+#### Highp
+```{r}
+set.seed(11)
+highp_spl = sample.split(highp_df$buy, SplitRatio=0.7)
+c(nrow(highp_df), sum(highp_spl), sum(!highp_spl))
+```
+
+```{r}
+cbind(highp_df, highp_spl) %>% filter(buy) %>% 
+  ggplot(aes(x=log(amount))) + geom_density(aes(fill=highp_spl), alpha=0.5)
+```
+```{r}
+highp_A0 = subset(highp_df, buy) %>% mutate_at(c("m","rev","amount"), log10)
+n = nrow(highp_A0)
+set.seed(11)
+highp_spl0 = 1:n %in% sample(1:n, round(0.7*n))
+c(nrow(highp_A0), sum(highp_spl0), sum(!highp_spl0))
+```
+
+
+```{r}
+highp_train = subset(highp_df, highp_spl)
+highp_test = subset(highp_df, !highp_spl)
+```
+
+```{r}
+glm_highp = glm(buy ~ . ,highp_train[,-c(1,10)],family = binomial() )
+summary(glm_highp)
+```
+
+```{r}
+highp_pred = predict(glm_highp, highp_test, type = "response")
+highp_confmt = table(actual = highp_test$buy, predict = highp_pred > 0.5)
+highp_confmt
+```
+
+```{r}
+highp_acc.ts = highp_confmt %>% {sum(diag(.))/sum(.)}
+c(1-mean(highp_test$buy) , highp_acc.ts) 
+```
+
+```{r}
+colAUC(highp_pred, highp_test$buy) 
+```
+
+#### Longterm
+```{r}
+set.seed(11)
+longterm_spl = sample.split(longterm_df$buy, SplitRatio=0.7)
+c(nrow(longterm_df), sum(longterm_spl), sum(!longterm_spl))
+```
+
+```{r}
+cbind(longterm_df, longterm_spl) %>% filter(buy) %>% 
+  ggplot(aes(x=log(amount))) + geom_density(aes(fill=longterm_spl), alpha=0.5)
+```
+```{r}
+longterm_A0 = subset(longterm_df, buy) %>% mutate_at(c("m","rev","amount"), log10)
+n = nrow(longterm_A0)
+set.seed(11)
+longterm_spl0 = 1:n %in% sample(1:n, round(0.7*n))
+c(nrow(longterm_A0), sum(longterm_spl0), sum(!longterm_spl0))
+```
+
+```{r}
+longterm_train = subset(longterm_df, longterm_spl)
+longterm_test = subset(longterm_df, !longterm_spl)
+```
+
+```{r}
+glm_longterm = glm(buy ~ . ,longterm_train[,-c(1,10)],family = binomial() )
+summary(glm_longterm)
+```
+
+```{r}
+longterm_pred = predict(glm_longterm, longterm_test, type = "response")
+longterm_confmt = table(actual = longterm_test$buy, predict = longterm_pred > 0.5)
+longterm_confmt
+```
+
+```{r}
+longterm_acc.ts = longterm_confmt %>% {sum(diag(.))/sum(.)}
+c(1-mean(longterm_test$buy) , longterm_acc.ts) 
+```
+
+```{r}
+colAUC(longterm_pred, longterm_test$buy) 
+```
+
+
+### 9. 購買金額模型 Buying Amount Model
+
+#### Normal
+```{r}
+# normal_train1 = subset(normal_A0, normal_spl0)
+# normal_test1 = subset(normal_A0, !normal_spl0)
+```
+```{r}
+# normal_lm = lm(amount ~ ., normal_train1[,2:10])
+# summary(normal_lm)
+```
+
+```{r}
+# r2.tr_normal = summary(normal_lm)$r.sq
+# SST_normal = sum((normal_test1$amount - mean(normail_train1$amount))^ 2)
+# SSE_normal = sum((predict(normal_lm, normal_test1) -  normal_test1$amount)^2)
+# r2.ts_normal = 1 - (SSE_normal/SST_normal)
+# c(R0train_normal=r2.tr_normal, R0test_normal=r2.ts_normal)
+```
+
+#### New
+
+```{r}
+new_train1 = subset(new_A0, new_spl0)
+new_test1 = subset(new_A0, !new_spl0)
+```
+```{r}
+new_lm = lm(amount ~ ., new_train1[,2:10])
+summary(new_lm)
+```
+
+```{r}
+r2.tr_new = summary(new_lm)$r.sq
+SST_new = sum((new_test1$amount - mean(new_train1$amount))^ 2)
+SSE_new = sum((predict(new_lm, new_test1) -  new_test1$amount)^2)
+r2.ts_new = 1 - (SSE_new/SST_new)
+c(R0train_new=r2.tr_new, R0test_new=r2.ts_new)
+```
+
+#### Silence
+```{r}
+silence_train1 = subset(silence_A0, silence_spl0)
+silence_test1 = subset(silence_A0, !silence_spl0)
+```
+```{r}
+silence_lm = lm(amount ~ ., silence_train1[,2:10])
+summary(silence_lm)
+```
+
+```{r}
+r2.tr_silence = summary(silence_lm)$r.sq
+SST_silence = sum((silence_test1$amount - mean(silence_train1$amount))^ 2)
+SSE_silence = sum((predict(silence_lm, silence_test1) -  silence_test1$amount)^2)
+r2.ts_silence = 1 - (SSE_silence/SST_silence)
+c(R0train_silence=r2.tr_silence, R0test_silence=r2.ts_silence)
+```
+
+#### Highp
+```{r}
+highp_train1 = subset(highp_A0, highp_spl0)
+highp_test1 = subset(highp_A0, !highp_spl0)
+```
+```{r}
+highp_lm = lm(amount ~ ., highp_train1[,2:10])
+summary(highp_lm)
+```
+
+```{r}
+r2.tr_highp = summary(highp_lm)$r.sq
+SST_highp = sum((highp_test1$amount - mean(highp_train1$amount))^ 2)
+SSE_highp = sum((predict(highp_lm, highp_test1) - highp_test1$amount)^2)
+r2.ts_highp = 1 - (SSE_highp/SST_highp)
+c(R0train_highp=r2.tr_highp, R0test_highp=r2.ts_highp)
+```
+
+#### Longterm
+```{r}
+longterm_train1 = subset(longterm_A0, longterm_spl0)
+longterm_test1 = subset(longterm_A0, !longterm_spl0)
+```
+```{r}
+longterm_lm = lm(amount ~ ., longterm_train1[,2:10])
+summary(longterm_lm)
+```
+
+```{r}
+r2.tr_longterm = summary(longterm_lm)$r.sq
+SST_longterm = sum((longterm_test1$amount - mean(longterm_train1$amount))^ 2)
+SSE_longterm = sum((predict(longterm_lm, longterm_test1) - longterm_test1$amount)^2)
+r2.ts_longterm = 1 - (SSE_longterm/SST_longterm)
+c(R0train_longterm=r2.tr_longterm, R0test_longterm=r2.ts_longterm)
+```
+
+
+### 10. 更多的預測變數 More Predictors for Better Prediction
+實務上我們可以製作更多的預測變數來提高模型的預測能力
+
+#### 匯整 2000-12-01 ~ 2001~02-28 這三個月的資料來做預測變數 
+```{r}
+load("data/tf0.rdata")
+d0 = max(X$date) + 1
+B = X0 %>% 
+  filter(date >= as.Date("2000-12-01")) %>% 
+  mutate(days = as.integer(difftime(d0, date, units="days"))) %>% 
+  group_by(cust) %>% summarise(
+    r = min(days),      # recency
+    s = max(days),      # seniority
+    f = n(),            # frquency
+    m = mean(total),    # monetary
+    rev = sum(total),   # total revenue contribution
+    raw = sum(gross),   # total gross profit contribution
+    age = age[1],       # age group
+    area = area[1],     # area code
+  ) %>% data.frame      # 28531
+nrow(B)
+```
+
+```{r}
+normal_B = B[B$cust %in% normal$cust,]
+new_B = B[B$cust %in% new$cust,]
+silence_B = B[B$cust %in% silence$cust,]
+highp_B = B[B$cust %in% highp$cust,]
+longterm_B = B[B$cust %in% longterm$cust,]
+```
+
+
+
+```{r}
+#B$Buy = predict(glm1, B, type="response")
+normal_B$Buy = predict(glm_normal, normal_B, type="response")
+new_B$Buy = predict(glm_new, new_B, type="response")
+silence_B$Buy = predict(glm_silence, silence_B, type="response")
+highp_B$Buy = predict(glm_highp, highp_B, type="response")
+longterm_B$Buy = predict(glm_longterm, longterm_B, type="response")
+```
+
+#### Normal
+```{r}
+# normal_Bs = normal_B %>% mutate_at(c("m","rev"), log10)
+# normal_B$Rev = 10^predict(normal_lm, normal_Bs)
+# par(mfrow=c(1,2), cex=0.8)
+# hist(normal_B$Buy)
+# hist(log(normal_B$Rev,10))
+```
+#### New
+```{r}
+new_Bs = new_B %>% mutate_at(c("m","rev"), log10)
+new_B$Rev = 10^predict(new_lm, new_Bs)
+par(mfrow=c(1,2), cex=0.8)
+hist(new_B$Buy)
+hist(log(new_B$Rev,10))
+```
+#### Silence
+```{r}
+silence_Bs = silence_B %>% mutate_at(c("m","rev"), log10)
+silence_B$Rev = 10^predict(silence_lm, silence_Bs)
+par(mfrow=c(1,2), cex=0.8)
+hist(silence_B$Buy)
+hist(log(silence_B$Rev,10))
+```
+#### Highp
+```{r}
+highp_Bs = highp_B %>% mutate_at(c("m","rev"), log10)
+highp_B$Rev = 10^predict(highp_lm, highp_Bs)
+par(mfrow=c(1,2), cex=0.8)
+hist(highp_B$Buy)
+hist(log(highp_B$Rev,10))
+```
+
+#### Longterm
+```{r}
+longterm_Bs = longterm_B %>% mutate_at(c("m","rev"), log10)
+longterm_B$Rev = 10^predict(longterm_lm, longterm_Bs)
+par(mfrow=c(1,2), cex=0.8)
+hist(longterm_B$Buy)
+hist(log(longterm_B$Rev,10))
+```
+
+### 11. 顧客終生價值(CLV - Customer Live Time Value)
+接著我們透過計算顧客終生價值讓我們了解每一個顧客的潛在價值有多大。 Given one's retention probability and expected buying amount, CLV can be estimated via discounted cash flow.
+
+<center>顧客$i$的終生價值  (customer $i$'s CLV)</center>
+
+$$ V_i = \sum_{t=0}^N g \times m_i \frac{r_i^t}{(1+d)^t} = g \times m_i \sum_{t=0}^N (\frac{r_i}{1+d})^t  $$
+
+<center>$m_i$、$r_i$：顧客$i$的預期(每期)營收貢獻、保留機率</center>
+
+<center>$g$、$d$：公司的(稅前)營業利潤利率、資金成本</center>
+
+<br>
+
+<center>$m_i$：$i$'s expected buying amount</center>
+
+<center>$r_i$：$i$'s expected retention probability</center>
+
+<center>$g$、$d$：company's operational margin rate</center>
+
+<center>$g$、$d$：company's cost of capital</center>
+
+#### Basic Assumption
+```{r}
+g = 0.3   # 平均毛利率
+N = 36    # 估計CLV期間(三年)
+d = 0.01  # 資本利率
+```
+#### Normal
+```{r}
+# normal_B$CLV = g * normal_B$Rev * rowSums(sapply(
+#   0:N, function(i) (normal_B$Buy/(1+d))^i ) )
+# summary(normal_B$CLV)
+```
+
+```{r fig.height=4}
+# ggplot(normal_B, aes(CLV)) + 
+#   geom_histogram(bins=30, fill="green",alpha=0.6) + 
+#   scale_x_log10()
+```
+```{r}
+# ggplot(normal_B, aes(CLV,color= age)) + 
+#   geom_density(alpha=0.6) + 
+#   scale_x_log10()
+```
+
+
+#### New
+There're 2398 cust. <br>
+```{r}
+new_B$CLV = g * new_B$Rev * rowSums(sapply(
+  0:N, function(i) (new_B$Buy/(1+d))^i ) )
+summary(new_B$CLV)
+```
+
+```{r fig.height=4}
+new1 =ggplot(new_B, aes(CLV)) + 
+  geom_histogram(bins=30, fill="green",alpha=0.6) + 
+  scale_x_log10()+ 
+  ggtitle("new CLV")
+ggplotly(new1)
+```
+```{r}
+new2 = ggplot(new_B, aes(CLV,color= age)) + 
+  geom_density(alpha=0.6) + 
+  scale_x_log10()+ 
+  ggtitle("new CLV by age")
+ggplotly(new2)
+```
+
+```{r}
+ggplot(new_B, aes(CLV)) + 
+  geom_histogram(bins=30,alpha=0.6) + 
+  scale_x_log10() +
+  facet_wrap(~age)
+```
+```{r}
+new_3 = ggplot(new_B, aes(CLV,color= area)) + 
+  geom_density(alpha=0.6) + 
+  scale_x_log10()+ 
+  ggtitle("new CLV by area")
+ggplotly(new_3)
+```
+
+```{r}
+ggplot(new_B, aes(CLV)) + 
+  geom_histogram(bins=30,alpha=0.6) + 
+  scale_x_log10() +
+  facet_wrap(~area)
+```
+
+
+
+#### Silence
+There're 8299 cust. <br>
+```{r}
+silence_B$CLV = g * silence_B$Rev * rowSums(sapply(
+  0:N, function(i) (silence_B$Buy/(1+d))^i ) )
+summary(silence_B$CLV)
+```
+
+```{r fig.height=4}
+silence1 = ggplot(silence_B, aes(CLV)) + 
+  geom_histogram(bins=30, fill="green",alpha=0.6) + 
+  scale_x_log10()+ 
+  ggtitle("silence CLV")
+ggplotly(silence1)
+```
+```{r}
+silence2 = ggplot(silence_B, aes(CLV,color= age)) + 
+  geom_density(alpha=0.6) + 
+  scale_x_log10()+ 
+  ggtitle("silence CLV by age")
+ggplotly(silence2)
+```
+
+```{r}
+ggplot(silence_B, aes(CLV)) + 
+  geom_histogram(bins=30,alpha=0.6) + 
+  scale_x_log10() +
+  facet_wrap(~age)
+```
+
+
+```{r}
+silence3 = ggplot(silence_B, aes(CLV,color= area)) + 
+  geom_density(alpha=0.6) + 
+  scale_x_log10()+ 
+  ggtitle("silence CLV by area")
+ggplotly(silence3)
+```
+
+```{r}
+ggplot(silence_B, aes(CLV)) + 
+  geom_histogram(bins=30,alpha=0.6) + 
+  scale_x_log10() +
+  facet_wrap(~area)
+```
+
+#### Highp
+There're 12375 cust. <br>
+```{r}
+highp_B$CLV = g * highp_B$Rev * rowSums(sapply(
+  0:N, function(i) (highp_B$Buy/(1+d))^i ) )
+summary(highp_B$CLV)
+```
+
+```{r fig.height=4}
+highp1 =ggplot(highp_B, aes(CLV)) + 
+  geom_histogram(bins=30, fill="green",alpha=0.6) + 
+  scale_x_log10()+ 
+  ggtitle("highp CLV")
+ggplotly(highp1)
+```
+```{r}
+highp2 = ggplot(highp_B, aes(CLV,color= age)) + 
+  geom_density(alpha=0.6) + 
+  scale_x_log10()+ 
+  ggtitle("highp CLV by age")
+ggplotly(highp2)
+```
+```{r}
+ggplot(highp_B, aes(CLV)) + 
+  geom_histogram(bins=30,alpha=0.6) + 
+  scale_x_log10() +
+  facet_wrap(~age)
+```
+
+```{r}
+highp_3 = ggplot(highp_B, aes(CLV,color= area)) + 
+  geom_density(alpha=0.6) + 
+  scale_x_log10()+ 
+  ggtitle("highp CLV by area")
+ggplotly(highp_3)
+```
+
+```{r}
+ggplot(highp_B, aes(CLV)) + 
+  geom_histogram(bins=30,alpha=0.6) + 
+  scale_x_log10() +
+  facet_wrap(~area)
+```
+
+
+#### Longterm
+There're 1172 cust. <br>
+```{r}
+longterm_B$CLV = g * longterm_B$Rev * rowSums(sapply(
+  0:N, function(i) (longterm_B$Buy/(1+d))^i ) )
+summary(longterm_B$CLV)
+```
+
+```{r fig.height=4}
+longterm1 = ggplot(longterm_B, aes(CLV)) + 
+  geom_histogram(bins=30, fill="green",alpha=0.6) + 
+  scale_x_log10()+ 
+  ggtitle("longerm CLV")
+ggplotly(longterm1)
+```
+```{r}
+longterm2 = ggplot(longterm_B, aes(CLV,color= age)) + 
+  geom_density(alpha=0.6) + 
+  scale_x_log10()+ 
+  ggtitle("longterm CLV by age")
+ggplotly(longterm2)
+```
+
+
+```{r}
+ggplot(longterm_B, aes(CLV)) + 
+  geom_histogram(bins=30,alpha=0.6) + 
+  scale_x_log10() +
+  facet_wrap(~age)
+```
+
+
+```{r}
+longterm_3 = ggplot(longterm_B, aes(CLV,color= area)) + 
+  geom_density(alpha=0.6) + 
+  scale_x_log10()+ 
+  ggtitle("longterm CLV by area")
+ggplotly(longterm_3)
+```
+
+```{r}
+ggplot(longterm_B, aes(CLV)) + 
+  geom_histogram(bins=30,alpha=0.6) + 
+  scale_x_log10() +
+  facet_wrap(~area)
+```
+
+### 12. 使用模型做預測 Utilizing Model for Prediction 
+
++ `Buy` : 預期再購機率 Re-Purchase Probability
++ `Rev` : 預期購買金額 Expected Revenue Contribution
+
+#### New
+```{r fig.height=2.4, fig.width=7.2}
+par(mfrow=c(1,2), cex=0.8)
+hist(new_B$Buy)
+hist(log(new_B$Rev,10))
+```
+
+```{r}
+group_by(new_B,age) %>% 
+  summarise(n=n(), Buy=mean(Buy), Rev=mean(Rev)) %>% 
+  ggplot(aes(Buy,Rev,size=n,label=age)) + 
+  geom_point(alpha=0.5,aes(col=age)) + 
+  geom_text(size=4) +  
+  labs(title="Age Group Comparison - New(size: no. customers)") +
+  xlab("Avg. Buying Probability") + ylab("Avg. Expected Revenue") +
+  scale_size(range=c(4,20)) + 
+  theme_bw()  +     
+  geom_vline(xintercept = sum(new_B$Buy)/length(new_B$Buy), col="purple", linetype = "dashed")+
+  geom_hline(yintercept = sum(new_B$Rev)/length(new_B$Rev), col="darkcyan", linetype="dashed")   -> p
+ggplotly(p)
+```
+#### Silence
+```{r fig.height=2.4, fig.width=7.2}
+par(mfrow=c(1,2), cex=0.8)
+hist(silence_B$Buy)
+hist(log(silence_B$Rev,10))
+```
+
+```{r}
+group_by(silence_B,age) %>% 
+  summarise(n=n(), Buy=mean(Buy), Rev=mean(Rev)) %>% 
+  ggplot(aes(Buy,Rev,size=n,label=age)) + 
+  geom_point(alpha=0.5,aes(col=age)) + 
+  geom_text(size=4) + 
+  labs(title="Age Group Comparison - Silence(size: no. customers)") +
+  xlab("Avg. Buying Probability") + ylab("Avg. Expected Revenue") +
+  scale_size(range=c(4,20)) + theme_bw() +
+  geom_vline(xintercept = sum(silence_B$Buy)/length(silence_B$Buy), col="purple", linetype = "dashed")+
+  geom_hline(yintercept = sum(silence_B$Rev)/length(silence_B$Rev), col="darkcyan", linetype="dashed")   -> p
+ggplotly(p)
+```
+
+#### Highp
+```{r fig.height=2.4, fig.width=7.2}
+par(mfrow=c(1,2), cex=0.8)
+hist(highp_B$Buy)
+hist(log(highp_B$Rev,10))
+```
+
+```{r}
+group_by(highp_B,age) %>% 
+  summarise(n=n(), Buy=mean(Buy), Rev=mean(Rev)) %>% 
+  ggplot(aes(Buy,Rev,size=n,label=age)) + 
+  geom_point(alpha=0.5,aes(col=age)) + 
+  geom_text(size=4) + 
+  labs(title="Age Group Comparison - Highp(size: no. customers)") +
+  xlab("Avg. Buying Probability") + ylab("Avg. Expected Revenue") +
+  scale_size(range=c(4,20)) + theme_bw() +
+  geom_vline(xintercept = sum(highp_B$Buy)/length(highp_B$Buy), col="purple", linetype = "dashed")+
+  geom_hline(yintercept = sum(highp_B$Rev)/length(highp_B$Rev), col="darkcyan", linetype="dashed")   -> p
+ggplotly(p)
+```
+
+#### Longterm
+```{r fig.height=2.4, fig.width=7.2}
+par(mfrow=c(1,2), cex=0.8)
+hist(longterm_B$Buy)
+hist(log(longterm_B$Rev,10))
+```
+
+```{r}
+group_by(longterm_B,age) %>% 
+  summarise(n=n(), Buy=mean(Buy), Rev=mean(Rev)) %>% 
+  ggplot(aes(Buy,Rev,size=n,label=age)) + 
+  geom_point(alpha=0.5,aes(col=age)) + 
+  geom_text(size=4) + 
+  labs(title="Age Group Comparison - Longterm(size: no. customers)") +
+  xlab("Avg. Buying Probability") + ylab("Avg. Expected Revenue") +
+  scale_size(range=c(4,20)) + 
+  theme_bw()+
+  geom_vline(xintercept = sum(longterm_B$Buy)/length(longterm_B$Buy), col="purple", linetype = "dashed")+
+  geom_hline(yintercept = sum(longterm_B$Rev)/length(longterm_B$Rev), col="darkcyan", linetype="dashed")   -> p
+ggplotly(p)
+```
+<br><hr>
+
+### 13. 成本效益函數 - 帶參數的假設 Cost Benefit Analysis
+
+##### § S曲線 (S-Curve)
+
+🌻 <z>S-Curve</z> : 許多管理工具都呈現S型的成本效益函數 
+
+🌻 我們可以用R內建的邏輯式函數(`plogis()`)來模擬S曲線
+$$\Delta P(x|m,b,a) = m \cdot Logis(\frac{10(x - b)}{a})$$
+```{r fig.height=3}
+DP = function(x,m0,b0,a0) {m0*plogis((10/a0)*(x-b0))}
+# X = 成本/ delta P = 購買效益
+# DP = 機率增幅
+# S曲線:用意單一函數，來衡量個行銷工具的成本效益
+#調整m,b,a，即是調整不同的工具，或同一(不同)工具對不同族群的成本效益關係
+```
+
+<br>
+
+##### § **帶參數**的成本效益函數 (S曲線)
+
+🌻 <z>parameters(參數)</z>可以帶入彈性，放寬模擬的範圍
+
+![](fig/EffectFunition.png)
+
+🌻 透過這3個<z>parameters(參數)</z>:
+
++ `m` : 最大效果 
++ `b` : 效果的位置(上升波段的中點)*b越大成本越高、效益越低  
++ `a` : 效果的範圍(上升波段的寬度) 
+
+我們可以寫『一支程式』來模擬『所有可能』的<z>成本效益函數</z>(S曲線)<br>
+藉以描述<z>策略變數</z>($x$,折價卷面額)和<z>策略效果</z>($\Delta P$,購買機率增幅)之間的關係
+
+<br>
+
+##### § 估計預期獲利
+
+有了行銷工具的成本效益函數之後，我們就可以估計將這個工具用在每一位顧客上的時候的預期效益:
+
+$$\hat{R}(x) = \left\{\begin{matrix}
+\Delta P \cdot M \cdot margin - x & , & P + \Delta P \leq 1\\ 
+(1-P) \cdot M \cdot margin - x & , & else 
+\end{matrix}\right.$$
+
+🌻 結合  ...
+
++ 預測 ($P, M$) : 每位顧客的預期購買機率和購買金額，與
++ 假設 ($\Delta P(x|m,b,a)$) : 行銷工具帶來的再購機率增額
+
+我們就可以估計這個工具用在每位顧客上的預期效益 $\hat{R}(x)$。 
+
+
+🌻 Note that both $\Delta P$ and $\hat{R}$ are functions of $x$ given $m,b,a$
+
++ $P, M$ 預期購買機率和金額，是<z>預測</z>
++ $Margin, X$ 利潤率和成本
++ $m, b, a$ 行銷工具的屬性，是<z>假設</z>
++ $x$ 行銷強度，是我們可以操作的、想要優化的<z>策略變數</z>
+
+<br>
+
+#### New
+**估計毛利率** $m$
+```{r}
+# load(data/tf0.rdata)
+# group_by(Z0, age) %>% summarise(sum(price)/sum(cost) - 1)
+margin = 0.17  # assume margin = 0.17
+```
+
+**估計每位顧客的淨收益** $\hat{R}(x)$
+```{r fig.height=3}
+m=0.2; b=25; a=40; x=30
+new_dp = pmin(1-new_B$Buy, DP(x,m,b,a)) # 機率增幅不可以超過1，有些人本來的購買機率就已經95%，如果增加0.15會超過1，所以該購買者最多只能增加0.05，因此才是1-B$Buy, DP(x,m,b,a)，取最小
+new_eR = new_dp*new_B$Rev*margin - x
+# eR = Expected return = 機率增幅*預期營收(Rev)*利潤率 - 成本
+hist(log(new_eR),main="預期淨收益分佈",xlab="預期淨收益",ylab="顧客人數",col = "lightblue")
+```
+
+
+#### Silence
+**估計毛利率** $m$
+```{r}
+# load(data/tf0.rdata)
+# group_by(Z0, age) %>% summarise(sum(price)/sum(cost) - 1)
+margin = 0.17  # assume margin = 0.17
+```
+
+**估計每位顧客的淨收益** $\hat{R}(x)$
+```{r fig.height=3}
+m=0.2; b=25; a=40; x=30
+silence_dp = pmin(1-silence_B$Buy, DP(x,m,b,a)) # 機率增幅不可以超過1，有些人本來的購買機率就已經95%，如果增加0.15會超過1，所以該購買者最多只能增加0.05，因此才是1-B$Buy, DP(x,m,b,a)，取最小
+silence_eR = silence_dp*silence_B$Rev*margin - x
+# eR = Expected return = 機率增幅*預期營收(Rev)*利潤率 - 成本
+hist(log(silence_eR),main="預期淨收益分佈",xlab="預期淨收益",ylab="顧客人數",col = "lightblue")
+```
+
+#### Highp
+**估計毛利率** $m$
+```{r}
+# load(data/tf0.rdata)
+# group_by(Z0, age) %>% summarise(sum(price)/sum(cost) - 1)
+margin = 0.17  # assume margin = 0.17
+```
+
+**估計每位顧客的淨收益** $\hat{R}(x)$
+```{r fig.height=3}
+m=0.2; b=25; a=40; x=30
+highp_dp = pmin(1-highp_B$Buy, DP(x,m,b,a)) # 機率增幅不可以超過1，有些人本來的購買機率就已經95%，如果增加0.15會超過1，所以該購買者最多只能增加0.05，因此才是1-B$Buy, DP(x,m,b,a)，取最小
+highp_eR = highp_dp*highp_B$Rev*margin - x
+# eR = Expected return = 機率增幅*預期營收(Rev)*利潤率 - 成本
+hist(log(highp_eR),main="預期淨收益分佈",xlab="預期淨收益",ylab="顧客人數",col = "lightblue")
+```
+
+#### Longterm
+**估計毛利率** $m$
+```{r}
+# load(data/tf0.rdata)
+# group_by(Z0, age) %>% summarise(sum(price)/sum(cost) - 1)
+margin = 0.17  # assume margin = 0.17
+```
+
+**估計每位顧客的淨收益** $\hat{R}(x)$
+```{r fig.height=3}
+m=0.2; b=25; a=40; x=30
+longterm_dp = pmin(1-longterm_B$Buy, DP(x,m,b,a)) # 機率增幅不可以超過1，有些人本來的購買機率就已經95%，如果增加0.15會超過1，所以該購買者最多只能增加0.05，因此才是1-B$Buy, DP(x,m,b,a)，取最小
+longterm_eR = longterm_dp*longterm_B$Rev*margin - x
+# eR = Expected return = 機率增幅*預期營收(Rev)*利潤率 - 成本
+hist(log(longterm_eR),main="預期淨收益分佈",xlab="預期淨收益",ylab="顧客人數",col = "lightblue")
+```
+<br>
+
+根據以上的分析結果 ...
+
+#### New
+🚴 有多少顧客的淨預期報償大於零？ (`eR > 0`)?
+```{r}
+sum(new_eR>0)
+```
+
+🚴 如果我們針對所有顧客做促銷，總預期報償將是？
+```{r}
+sum(new_eR)
+```
+
+🚴 如果我們針對預期報償大於零的顧客做促銷，預期報償將是？
+```{r}
+sum(new_eR[ new_eR>0 ])
+# 選擇性行銷賺七萬多
+```
+
+🚴 如果我們只針對預期報償大於10的顧客做促銷，預期報償將是？
+```{r}
+sum(new_eR[ new_eR>10 ])
+```
+
+🚴 如果我們只針對預期報償大於10的南港(`z115`)顧客做促銷，預期報償將是？
+```{r}
+sum(new_eR[ new_eR>10 & new_B$area=="z115"])
+
+```
+🚴如果我們只針對預期報償大於10的汐止(`z221`)顧客做促銷，預期報償將是？
+```{r}
+sum(new_eR[ new_eR>10 & new_B$area=="z221"])
+
+```
+
+#### Silence
+🚴 有多少顧客的淨預期報償大於零？ (`eR > 0`)?
+```{r}
+sum(silence_eR>0)
+```
+
+🚴 如果我們針對所有顧客做促銷，總預期報償將是？
+```{r}
+sum(silence_eR)
+```
+
+🚴 如果我們針對預期報償大於零的顧客做促銷，預期報償將是？
+```{r}
+sum(silence_eR[ silence_eR>0 ])
+# 選擇性行銷賺七萬多
+```
+
+🚴 如果我們只針對預期報償大於10的顧客做促銷，預期報償將是？
+```{r}
+sum(silence_eR[ silence_eR>10 ])
+```
+
+🚴 如果我們只針對預期報償大於10的南港(`z115`)顧客做促銷，預期報償將是？
+```{r}
+sum(silence_eR[ silence_eR>10 & silence_B$area=="z115"   ])
+
+```
+🚴如果我們只針對預期報償大於10的汐止(`z221`)顧客做促銷，預期報償將是？
+```{r}
+sum(silence_eR[ silence_eR>10 & silence_B$area=="z221"])
+
+```
+
+#### Highp
+🚴 有多少顧客的淨預期報償大於零？ (`eR > 0`)?
+```{r}
+sum(highp_eR>0)
+```
+
+🚴 如果我們針對所有顧客做促銷，總預期報償將是？
+```{r}
+sum(highp_eR)
+```
+
+🚴 如果我們針對預期報償大於零的顧客做促銷，預期報償將是？
+```{r}
+sum(highp_eR[ highp_eR>0 ])
+# 選擇性行銷賺七萬多
+```
+
+🚴 如果我們只針對預期報償大於10的顧客做促銷，預期報償將是？
+```{r}
+sum(highp_eR[ highp_eR>10 ])
+```
+
+🚴 如果我們只針對預期報償大於10的南港(`z115`)顧客做促銷，預期報償將是？
+```{r}
+sum(highp_eR[ highp_eR>10 & highp_B$area=="z115"   ])
+
+```
+🚴如果我們只針對預期報償大於10的汐止(`z221`)顧客做促銷，預期報償將是？
+```{r}
+sum(highp_eR[highp_eR>10 & highp_B$area=="z221"])
+
+```
+
+#### Longterm
+🚴 有多少顧客的淨預期報償大於零？ (`eR > 0`)?
+```{r}
+sum(longterm_eR>0)
+```
+
+🚴 如果我們針對所有顧客做促銷，總預期報償將是？
+```{r}
+sum(longterm_eR)
+```
+
+🚴 如果我們針對預期報償大於零的顧客做促銷，預期報償將是？
+```{r}
+sum(longterm_eR[ longterm_eR>0 ])
+# 選擇性行銷賺七萬多
+```
+
+🚴 如果我們只針對預期報償大於10的顧客做促銷，預期報償將是？
+```{r}
+sum(longterm_eR[ longterm_eR>10 ])
+```
+
+🚴 如果我們只針對預期報償大於10的南港(`z115`)顧客做促銷，預期報償將是？
+```{r}
+sum(longterm_eR[ longterm_eR>10 & longterm_B$area=="z115"   ])
+
+```
+🚴如果我們只針對預期報償大於10的汐止(`z221`)顧客做促銷，預期報償將是？
+```{r}
+sum(longterm_eR[ longterm_eR>10 & longterm_B$area=="z221"])
+
+```
+<br><hr>
+
+
+
+### 14.策略市場模擬(重新設參數!!) Simulate Marketing Strategies
+
+給定工具參數($m,b,a$)，我們可在其有效成本範圍($x \in [b-\frac{a}{2}, b+\frac{a}{2}]$)之內，估計工具的效果：
+
++ `eReturn` : 對所有的人行銷的總預期收益
++ `N` : 預期收益大於零的人數
++ `eReturn2` : 只對期收益大於零的人做行銷的總預期收益
+
+如何隨成本變化。
+
+##### § 多個行銷工具
+
+稍微改一下程式，我們可以同時模擬多(4)個行銷工具，並比較他們的成本效益
+With some modification of the code, we can define multiple (4) instruments 
+
+```{r fig.height=3, fig.width=7}
+mm=c(0.20, 0.25, 0.15, 0.25)
+bb=c(  25,   30,   15,   30)
+aa=c(  40,   40,   30,   60) 
+X = seq(0,60,2) 
+do.call(rbind, lapply(1:length(mm), function(i) data.frame(
+  Inst=paste0('Inst',i), Cost=X, 
+  Gain=DP(X,mm[i],bb[i],aa[i])
+  ))) %>% data.frame %>% 
+  ggplot(aes(x=Cost, y=Gain, col=Inst)) +
+  geom_line(size=1.5,alpha=0.5) + theme_bw() +
+  ggtitle("Prob. Function: f(x|m,b,a)")
+```
+
+and run simulation on multiple instrument to compare their cost effectiveness. 
+
+#### New
+```{r warning=F, fig.height=8, fig.width=8}
+X = seq(10, 60, 1) 
+new_df = do.call(rbind, lapply(1:length(mm), function(i) {
+  sapply(X, function(x) {
+    new_dp = pmin(1-new_B$Buy, DP(x,mm[i],bb[i],aa[i]))
+    new_eR = new_dp*new_B$Rev*margin - x
+    c(i=i, x=x, eR.ALL=sum(new_eR), N=sum(new_eR>0), eR.SEL=sum(new_eR[new_eR > 0]) )
+    }) %>% t %>% data.frame
+  })) 
+# i : 工具編號
+new_df %>% 
+  mutate_at(vars(eR.ALL, eR.SEL), function(y) round(y/1000)) %>% 
+  gather('key','value',-i,-x) %>% 
+  mutate(Instrument = paste0('I',i)) %>%
+  ggplot(aes(x=x, y=value, col=Instrument)) + 
+  geom_hline(yintercept=0, linetype='dashed', col='blue') +
+  geom_line(size=1.5,alpha=0.5) + 
+  xlab('工具選項(成本)') + ylab('預期收益($K)') + 
+  ggtitle('行銷工具優化','假設行銷工具的效果是其成本的函數') +
+    facet_wrap(~key,ncol=1,scales='free_y') + theme_bw() -> new_p
+
+plotly::ggplotly(new_p)
+```
+```{r}
+group_by(new_df, i) %>% top_n(1,eR.SEL)
+```
+
+
+#### Silence
+```{r warning=F, fig.height=8, fig.width=8}
+X = seq(10, 60, 1) 
+silence_df = do.call(rbind, lapply(1:length(mm), function(i) {
+  sapply(X, function(x) {
+    silence_dp = pmin(1-silence_B$Buy, DP(x,mm[i],bb[i],aa[i]))
+    silence_eR = silence_dp*silence_B$Rev*margin - x
+    c(i=i, x=x, eR.ALL=sum(silence_eR), N=sum(silence_eR>0), eR.SEL=sum(silence_eR[silence_eR > 0]) )
+    }) %>% t %>% data.frame
+  })) 
+# i : 工具編號
+silence_df %>% 
+  mutate_at(vars(eR.ALL, eR.SEL), function(y) round(y/1000)) %>% 
+  gather('key','value',-i,-x) %>% 
+  mutate(Instrument = paste0('I',i)) %>%
+  ggplot(aes(x=x, y=value, col=Instrument)) + 
+  geom_hline(yintercept=0, linetype='dashed', col='blue') +
+  geom_line(size=1.5,alpha=0.5) + 
+  xlab('工具選項(成本)') + ylab('預期收益($K)') + 
+  ggtitle('行銷工具優化','假設行銷工具的效果是其成本的函數') +
+    facet_wrap(~key,ncol=1,scales='free_y') + theme_bw() -> silence_p
+
+plotly::ggplotly(silence_p)
+```
+```{r}
+group_by(silence_df, i) %>% top_n(1,eR.SEL)
+```
+
+#### Highp
+```{r warning=F, fig.height=8, fig.width=8}
+X = seq(10, 60, 1) 
+highp_df = do.call(rbind, lapply(1:length(mm), function(i) {
+  sapply(X, function(x) {
+    highp_dp = pmin(1-highp_B$Buy, DP(x,mm[i],bb[i],aa[i]))
+    highp_eR = highp_dp*highp_B$Rev*margin - x
+    c(i=i, x=x, eR.ALL=sum(highp_eR), N=sum(highp_eR>0), eR.SEL=sum(highp_eR[highp_eR > 0]) )
+    }) %>% t %>% data.frame
+  })) 
+# i : 工具編號
+highp_df %>% 
+  mutate_at(vars(eR.ALL, eR.SEL), function(y) round(y/1000)) %>% 
+  gather('key','value',-i,-x) %>% 
+  mutate(Instrument = paste0('I',i)) %>%
+  ggplot(aes(x=x, y=value, col=Instrument)) + 
+  geom_hline(yintercept=0, linetype='dashed', col='blue') +
+  geom_line(size=1.5,alpha=0.5) + 
+  xlab('工具選項(成本)') + ylab('預期收益($K)') + 
+  ggtitle('行銷工具優化','假設行銷工具的效果是其成本的函數') +
+    facet_wrap(~key,ncol=1,scales='free_y') + theme_bw() -> highp_p
+
+plotly::ggplotly(highp_p)
+```
+```{r}
+group_by(highp_df, i) %>% top_n(1,eR.SEL)
+```
+
+#### Longterm
+```{r warning=F, fig.height=8, fig.width=8}
+X = seq(10, 60, 1) 
+longterm_df = do.call(rbind, lapply(1:length(mm), function(i) {
+  sapply(X, function(x) {
+    longterm_dp = pmin(1-longterm_B$Buy, DP(x,mm[i],bb[i],aa[i]))
+    longterm_eR = longterm_dp*longterm_B$Rev*margin - x
+    c(i=i, x=x, eR.ALL=sum(longterm_eR), N=sum(longterm_eR>0), eR.SEL=sum(longterm_eR[longterm_eR > 0]) )
+    }) %>% t %>% data.frame
+  })) 
+# i : 工具編號
+longterm_df %>% 
+  mutate_at(vars(eR.ALL, eR.SEL), function(y) round(y/1000)) %>% 
+  gather('key','value',-i,-x) %>% 
+  mutate(Instrument = paste0('I',i)) %>%
+  ggplot(aes(x=x, y=value, col=Instrument)) + 
+  geom_hline(yintercept=0, linetype='dashed', col='blue') +
+  geom_line(size=1.5,alpha=0.5) + 
+  xlab('工具選項(成本)') + ylab('預期收益($K)') + 
+  ggtitle('行銷工具優化','假設行銷工具的效果是其成本的函數') +
+    facet_wrap(~key,ncol=1,scales='free_y') + theme_bw() -> longterm_p
+
+plotly::ggplotly(longterm_p)
+```
+
+```{r}
+group_by(longterm_df, i) %>% top_n(1,eR.SEL)
+#在各組中找預期淨報酬最大的
+```
+
+🚴 從模擬的結果我們可以很容易看出每一個工具的：
+
++ 最佳行銷強度
++ 最佳行銷對象人數
++ 最佳預期獲利
+
+<br><br><hr>
+
+
+
+```{r}
+options(scipen=10)
+pacman::p_load(latex2exp,Matrix,dplyr,tidyr,ggplot2,caTools,plotly,ggplot)
+rm(list=ls(all=TRUE))
+load("data/tf4.rdata")
+```
+
+```{r}
+#A39 A44年齡兩群
+a39df<-B[B$age=="a39",c("cust","r","s","f","m","rev","raw","age","area","Buy","Rev")]
+a44df<-B[B$age=="a44",c("cust","r","s","f","m","rev","raw","age","area","Buy","Rev")]
+```
+
+```{r}
+DP = function(x,m0,b0,a0) {m0*plogis((10/a0)*(x-b0))}
+margin = 0.17 
+m=0.2; b=25; a=40; x=30
+a39df_dp = pmin(1-a39df$Buy, DP(x,m,b,a)) # 機率增幅不可以超過1，有些人本來的購買機率就已經95%，如果增加0.15會超過1，所以該購買者最多只能增加0.05，因此才是1-B$Buy, DP(x,m,b,a)，取最小
+a39df_er = a39df_dp*a39df$Rev*margin - x
+hist(log(a39df_er),main="預期淨收益分佈",xlab="預期淨收益",ylab="顧客人數",col = "lightblue")
+```
+
+```{r}
+m=0.2; b=25; a=40; X = seq(10,45,1)
+df = sapply(X, function(x) {
+  dp = pmin(DP(x,m,b,a),1-a39df$Buy)
+  eR = dp*a39df$Rev*margin - x
+  c(x=x, eReturn=sum(eR),N=sum(eR > 0), eReturn2=sum(eR[eR > 0]))
+  }) %>% t %>% data.frame
+
+df %>% gather('key','value',-x)%>% ggplot(aes(x=x, y=value, col=key)) + 
+  geom_hline(yintercept=0,linetype='dashed') +
+  geom_line(size=1.5,alpha=0.5) + 
+  facet_wrap(~key,ncol=1,scales='free_y') + theme_bw()
+```
+
+```{r}
+mm=c(0.3, 0.25)
+bb=c(  35,   30)
+aa=c(  20,   40) 
+X = seq(0,60,2) 
+do.call(rbind, lapply(1:length(mm), function(i) data.frame(
+  Inst=paste0('Inst',i), Cost=X, 
+  Gain=DP(X,mm[i],bb[i],aa[i])
+  ))) %>% data.frame %>% 
+  ggplot(aes(x=Cost, y=Gain, col=Inst)) +
+  geom_line(size=1.5,alpha=0.5) + theme_bw() +
+  ggtitle("Prob. Function: f(x|m,b,a)")
+```
+
+
+# A39
+```{r}
+X = seq(10, 60, 1) 
+a39df = do.call(rbind, lapply(1:length(mm), function(i) {
+  sapply(X, function(x) {
+    a39dp = pmin(1-a39df$Buy, DP(x,mm[i],bb[i],aa[i]))
+    a39eR = a39dp*a39df$rev*margin - x
+    c(i=i, x=x, eR.ALL=sum(a39eR), N=sum(a39eR>0), eR.SEL=sum(a39eR[a39eR > 0]) )
+    }) %>% t %>% data.frame
+  }))
+
+
+
+a39df %>% 
+  mutate_at(vars(eR.ALL, eR.SEL), function(y) round(y/1000)) %>% 
+  gather('key','value',-i,-x) %>% 
+  mutate(Instrument = paste0('I',i)) %>%
+  ggplot(aes(x=x, y=value, col=Instrument)) + 
+  geom_hline(yintercept=0, linetype='dashed', col='blue') +
+  geom_line(size=1.5,alpha=0.5) + 
+  xlab('工具選項(成本)') + ylab('預期收益($K)') + 
+  ggtitle('行銷工具優化','假設行銷工具的效果是其成本的函數') +
+    facet_wrap(~key,ncol=1,scales='free_y') + theme_bw() -> a39_p
+
+plotly::ggplotly(a39_p)
+```
+
+
+```{r}
+group_by(a39df, i) %>% top_n(1,eR.SEL)
+```
+
+當成本為43時,預期的收益是42萬左右,人數約4028，m設不同時有不同的效果 <br>
+# A44
+
+```{r}
+X = seq(10, 60, 1) 
+a44df = do.call(rbind, lapply(1:length(mm), function(i) {
+  sapply(X, function(x) {
+    a44dp = pmin(1-a44df$Buy, DP(x,mm[i],bb[i],aa[i]))
+    a44eR = a44dp*a44df$rev*margin - x
+    c(i=i, x=x, eR.ALL=sum(a44eR), N=sum(a44eR>0), eR.SEL=sum(a44eR[a44eR > 0]) )
+    }) %>% t %>% data.frame
+  }))
+
+
+a44df %>% 
+  mutate_at(vars(eR.ALL, eR.SEL), function(y) round(y/1000)) %>% 
+  gather('key','value',-i,-x) %>% 
+  mutate(Instrument = paste0('I',i)) %>%
+  ggplot(aes(x=x, y=value, col=Instrument)) + 
+  geom_hline(yintercept=0, linetype='dashed', col='blue') +
+  geom_line(size=1.5,alpha=0.5) + 
+  xlab('工具選項(成本)') + ylab('預期收益($K)') + 
+  ggtitle('行銷工具優化','假設行銷工具的效果是其成本的函數') +
+    facet_wrap(~key,ncol=1,scales='free_y') + theme_bw() -> a44_p
+
+plotly::ggplotly(a44_p)
+```
+
+```{r}
+group_by(a44df, i) %>% top_n(1,eR.SEL)
+```
+
