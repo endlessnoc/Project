@@ -1,0 +1,281 @@
+---
+title: "Tafeng Dataset Clustering"
+author: "Wei-Hsin Hsu"
+date: "`r Sys.time()`"
+output:
+  pdf_document: default
+  html_document:
+    highlight: pygments
+    theme: flatly
+    css: ../etc/style.css
+---
+<br>
+
+Data:https://www.kaggle.com/datasets/chiranjivdas09/ta-feng-grocery-dataset
+
+<hr>
+
+### 1. Importing Libraries and Data
+
+```{r echo=T, message=F, cache=F, warning=F}
+rm(list=ls(all=T))
+pacman::p_load(magrittr, readr, caTools, ggplot2, dplyr, vcd, plotly, reshape2, tidyr, gridExtra, plot3D, randomcoloR, scatterplot3d)
+```
+
+```{r}
+#Importing Data
+df = read_csv("data/ta_feng_all_months_merged.csv") %>% 
+     data.frame %>% 
+     setNames(c("date","cust","age","area","cat","prod","qty","cost","price"))
+head(df)
+```
+```{r}
+#Data Structure
+str(df)
+```
+
+```{r}
+#Unique Value of each col
+col_list = colnames(df)
+unique_counts = list()
+
+for (col in col_list) {
+  unique_count = length(unique(df[[col]])) 
+  unique_counts[[col]] = unique_count
+}
+
+for (col in col_list) {  
+  cat("Column", col, "has", unique_counts[[col]], "unique values.\n")
+}
+
+```
+
+### 2. Data Structure Customizing
+
+```{r}
+#Date Format, age group, area code 
+df$date = as.Date(df$date, format="%m/%d/%Y")
+age.group = c("<25","25-29","30-34","35-39","40-44",
+              "45-49","50-54","55-59","60-64",">65")
+df$age = c(paste0("u",seq(24,69,5)),"none")[match(df$age,age.group,11)]
+df$area = paste0("z",df$area)
+head(df)
+```
+
+
+```{r}
+#Define outlier
+sapply(df[,7:9], quantile, prob=c(.99, .999, .9995))
+```
+
+```{r}
+#Remove outlier
+df = subset(df, qty<=24 & cost<=3800 & price<=4000) 
+nrow(df)  
+```
+
+```{r}
+#Group data by Date & Customer
+df$tid = group_indices(df, date, cust)
+```
+
+```{r}
+#View No. of cust, cat, prod, and tid after grouping
+sapply(df[c("cust","cat","prod","tid")], n_distinct)
+```
+
+```{r}
+#Aggregate data by tid
+X = df %>% group_by(tid) %>% 
+  summarise(
+    date = min(date),          # Date 
+    cust = min(cust),          # Customer ID
+    age = min(age),            # Customer Age
+    area = min(area),          # Customer Area
+    items = n(),               # Quantity of transaction
+    pieces = sum(qty),         # Quantity of prod
+    total = sum(price),        # Total Price
+    gross = sum(price - cost)  # Gross profit
+) %>% data.frame
+nrow(X)  
+```
+```{r}
+#Summary of the data
+summary(X)
+
+```
+
+
+```{r}
+# Define outlier
+sapply(X[,6:9], quantile, prob=c(.999, .9995, .9999))
+```
+
+```{r}
+# Remove outlier
+X = subset(X, items<=62 & pieces<95 & total<16000) 
+nrow(X)
+#共有119328筆資料
+```
+
+
+```{r}
+#Group by customer，然後對每個客戶的數據進行摘要統計。=
+#r（Recency）
+#s（Seniority）
+#f（Frquenc）
+#m（Monetary）
+#rev（Total revenue contribution）
+#raw（Total gross profit contribution）
+#age（Age group）
+#area（Area code）
+d0 = max(X$date) + 1
+A = X %>% mutate(
+  days = as.integer(difftime(d0, date, units="days"))) %>% 
+    group_by(cust) %>% 
+      summarize(
+        r = min(days),      # Recency
+        s = max(days),      # Seniority
+        f = n(),            # Frquency
+        m = round(mean(total)),    # Monetary
+        rev = sum(total),   # Total revenue contribution
+        raw = sum(gross),   # Total gross profit contribution
+        age = min(age),     # Age group
+        area = min(area),   # Area code
+  ) %>% 
+    data.frame      
+nrow(A) 
+```
+
+
+
+### 3. Clustering Analysis with R(S)FM Model (Recency, Seniority, Frequency, Monetary)
+#### Ref:https://rpubs.com/skydome20/R-Note9-Clustering
+
+```{r}
+rfm = scale(A[,2:5]) %>% data.frame #Standardizing rsfm
+head(rfm)
+```
+
+```{r}
+#Hierarchical method)
+rfmcluster = hclust(dist(rfm), method='ward.D')# Euclidean method to get distance matrix, Ward Method (ANOVA) to get cluster
+plot(rfmcluster)
+```
+
+
+
+```{r}
+#Make 5 cluster
+rfm5 = cutree(rfmcluster, k=5)  
+```
+
+```{r}
+#r,s,f,m average of each group
+rfmtable = split(rfm,rfm5) %>% sapply(colMeans) %>% round(4)  %>% data.frame()
+rfmtable
+```
+
+
+```{r fig.height=6, fig.width=10}
+# par(cex=0.8)
+#  split(rfm,rfm5) %>%
+#    sapply(colMeans) %>% barplot(beside=T,col = c("cyan", "darkcyan", "violet","darkmagenta"))
+#    legend('topright',legend=colnames(rfm),fill =c("cyan", "darkcyan", "violet","darkmagenta"))
+color_list = c("cyan", "darkcyan", "violet", "darkmagenta")
+par(mfrow = c(1, 5)) 
+rfm_means <- split(rfm, rfm5) %>% sapply(colMeans)
+
+for (i in 1:5) {
+  barplot(rfm_means[, i], beside = TRUE, col = color_list,
+          main = paste("Group", i), names.arg = colnames(rfm),
+          ylim = c(-1.5, 2))  
+}
+
+```
+
+Using GPT to interpret: <br>
+
+Group 1: r low, s high, f moderate, m moderate -> Recent purchase days lower than average may indicate relatively loyal customers. At the same time, their earliest purchase days are higher than the average, which might mean they have been long-term loyal customers. Their purchase frequency and average purchase amount are approximately average, indicating stable customers with a moderate spending level. <br>
+
+Group 2: r low, s very low, f low, m slightly low -> Recent purchase days lower than average may also indicate relatively loyal customers. However, their earliest purchase days are significantly lower than average, suggesting they might be relatively new customers. Their purchase frequency is lower than average, and the average purchase amount is slightly lower than average, indicating loyal customers with a relatively smaller average contribution to sales. <br>
+
+Group 3: r very high, s slightly high, f low, m slightly low -> Recent purchase days far higher than average might be less active customers. However, their earliest purchase days are slightly higher than average, suggesting they were active customers at an earlier time. Their purchase frequency is lower than average, and the average purchase amount is slightly lower than average, indicating less active customers with a moderate spending level. <br>
+
+Group 4: r slightly high, s low, f low, m very high -> Customers with recent purchase days slightly higher than average, but their earliest purchase days are lower than average, which might suggest they were active customers at an earlier time but are less active now. Their purchase frequency is lower than average, but the average purchase amount is significantly higher than average, indicating high-value but less active customers. <br>
+
+Group 5: r low, s high, f very high, m low -> Recent purchase days lower than average may indicate relatively loyal customers. Their earliest purchase days are higher than average, which might mean they have been long-term loyal customers. However, their purchase frequency is significantly higher than average, but the average purchase amount is lower than average, suggesting frequent but lower-value customers.<br>
+
+
+```{r}
+#Non-hierarchical method: K-means
+set.seed(11) #Set random seed
+A$rfm_group = kmeans(rfm, centers= 5)$cluster
+head(A)
+```
+
+```{r}
+#View number of clients in each group 
+table(A$rfm_group)
+```
+
+
+
+```{r}
+#Seperate data based on rfm_group.
+split_data <- split(A, A$rfm_group)
+for (rfm_code in names(split_data)) {
+  rfm_data = split_data[[rfm_code]]
+  new_var_name = paste("A_", rfm_code, sep = "")
+  assign(new_var_name, rfm_data)
+}
+rfmgroup_list = list(A_1, A_2, A_3, A_4, A_5)
+```
+
+
+```{r}
+#各組年齡分布檢查(由於我們是依照消費者行為r, s, f, m來做集群分析，因此這邊各Group的差異不應太大(?))
+rfmage = A %>% 
+  filter(age!="none" & area!="zUnknown") %>%
+  group_by(age) %>%
+    mutate(
+      Avg.Freq = mean(f)
+    )%>%
+    ggplot(aes(x = age, y = Avg.Freq, fill = rfm_group)) +
+    geom_bar(stat = "identity", position = "dodge", width = 0.5) +
+    labs(title = "不同地區的r參數分布", y = "數量", x="地區") +
+    theme_minimal() +
+    facet_wrap(~rfm_group, scales = "free_y", ncol = 1)
+ggplotly(rfmage)
+```
+
+
+
+```{r}
+#各組地區分布檢查(由於我們是依照消費者行為r, s, f, m來做集群分析，因此這邊各Group的差異不應太大(?))
+rfmarea = A %>% 
+  filter(age!="none" & area!="zUnknown") %>%
+  group_by(area) %>%
+    mutate(
+      Avg.Freq = mean(f)
+    )%>%
+    ggplot(aes(x = area, y = Avg.Freq, fill = rfm_group)) +
+    geom_bar(stat = "identity", position = "dodge", width = 0.5) +
+    labs(title = "不同地區的r參數分布", y = "數量", x="地區") +
+    theme_minimal() +
+    facet_wrap(~rfm_group, scales = "free_y", ncol = 1)
+ggplotly(rfmarea)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
