@@ -1,6 +1,6 @@
 # Investment Management with Python and Machine Learning
 
-Pprogramming notebooks for the specialization course **Investment Management with Python and Machine Learning** offered by **EDHEC Business School** on **Coursera**. 
+Programming notebooks for the specialization course **Investment Management with Python and Machine Learning** offered by **EDHEC Business School** on **Coursera**. 
 Link to the Specialization: https://www.coursera.org/specializations/investment-management-python-machine-learning#courses
 
 ### Course1: Introduction to Portfolio Construction and Analysis with Python
